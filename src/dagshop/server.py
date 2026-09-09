@@ -305,6 +305,7 @@ def create_app(
             "scoped": scan.scoped,
             "treatment_table": [asdict(r) for r in scan.treatment_table],
             "outcome_table": [asdict(r) for r in scan.outcome_table],
+            "covariate_table": [asdict(r) for r in scan.covariate_table],
             "full_table": [asdict(r) for r in scan.full_table],
             "skipped": [asdict(s) for s in scan.skipped],
         }

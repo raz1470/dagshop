@@ -8,10 +8,15 @@ anything on the DAG automatically. For every relevant ordered pair
 `dowhy.gcm`'s auto-assignment uses at its default quality setting. Ranks
 by association with designated treatment(s)/outcome(s) (`n * (t + o)`
 fits) when designated, or falls back to a full pairwise scan
-(`n * (n - 1)`) when not. No threshold-based flagging: this module
-produces ranking table(s) and a per-pair plot cache only, per SCOPE.md's
-"Sorting, not auto-flagging" -- spotting a variable that ranks high on
-both the treatment and outcome tables is left to the PM/DS.
+(`n * (n - 1)`) when not. When scoped, a third table covers every
+ordered pair among the remaining covariates (neither treatment nor
+outcome) -- the same scoring method as the other two tables, run over
+`_full_pairs` of just the covariate columns; unscoped mode already
+covers every pair via `full_table`, so no separate covariate table is
+built there. No threshold-based flagging: this module produces ranking
+table(s) and a per-pair plot cache only, per SCOPE.md's "Sorting, not
+auto-flagging" -- spotting a variable that ranks high on both the
+treatment and outcome tables is left to the PM/DS.
 
 Depends only on pandas/sklearn, not on graph.py or the UI (dagshop has no
 dowhy dependency at all -- the DAG this tool exports is loaded into the
@@ -54,6 +59,16 @@ Ryan (flagging per PREFERENCES.md):
   `AssociationScan.skipped` with a reason, and a `AssociationSkippedWarning`
   is issued) rather than aborting the whole scan. Mirrors graph.py's
   cycle handling: warn and continue, don't except.
+
+Decision from session 10 (asked of and confirmed by Ryan before writing
+`covariate_table`): its pairwise fits reuse the scan's existing
+`max_rows`/`test_size` subsample rather than a separate, smaller cap.
+Scoped mode exists to avoid `n * (n - 1)` cost, and a covariate table is
+structurally that same full pairwise scan restricted to the covariate
+columns -- so it can cost as much as the unscoped path once treatments/
+outcomes are a small fraction of all columns. Ryan chose consistency
+(same rows, same scoring method, one `--max-rows` knob) over adding a
+second row-cap parameter just for this table.
 """
 
 from __future__ import annotations
@@ -150,19 +165,25 @@ class SkippedPair:
 class AssociationScan:
     """Result of `scan_associations`.
 
-    Exactly one of (`treatment_table` and/or `outcome_table`) or
-    `full_table` is populated, matching `scoped`: SCOPE.md's "ranked
-    association table(s)... split into 'associated with treatment(s)' /
-    'associated with outcome(s)' shown side by side when designated,
-    otherwise a single table." Each populated table is sorted by score
-    descending (ties broken by predictor name, for determinism). No
-    field here flags a variable as a confounder -- that reading is left
-    to the PM/DS, per SCOPE.md's "Sorting, not auto-flagging."
+    Exactly one of (`treatment_table` and/or `outcome_table`, plus
+    `covariate_table`) or `full_table` is populated, matching `scoped`:
+    SCOPE.md's "ranked association table(s)... split into 'associated
+    with treatment(s)' / 'associated with outcome(s)' shown side by side
+    when designated, otherwise a single table," plus a third table
+    (session 10) covering every ordered pair among the columns that are
+    neither a treatment nor an outcome. `covariate_table` is only ever
+    populated when `scoped` is true and at least 2 such columns remain;
+    unscoped mode leaves it empty since `full_table` already covers
+    every pair. Each populated table is sorted by score descending (ties
+    broken by predictor name, for determinism). No field here flags a
+    variable as a confounder -- that reading is left to the PM/DS, per
+    SCOPE.md's "Sorting, not auto-flagging."
     """
 
     scoped: bool
     treatment_table: list[PairResult]
     outcome_table: list[PairResult]
+    covariate_table: list[PairResult]
     full_table: list[PairResult]
     plot_cache: dict[tuple[str, str], PairPlotData]
     skipped: list[SkippedPair]
@@ -206,7 +227,9 @@ def scan_associations(
         An `AssociationScan`. If neither `treatments` nor `outcomes` is
         given, `full_table` holds every ordered pair `(X, Y)` for `X !=
         Y` across all of `data`'s columns; otherwise `treatment_table`/
-        `outcome_table` hold the scoped pairs.
+        `outcome_table` hold the scoped pairs, and `covariate_table`
+        holds every ordered pair among the remaining columns (neither a
+        treatment nor an outcome), when at least 2 such columns exist.
     """
     if data.shape[1] < 2:
         raise ValueError("data must have at least 2 columns to scan pairwise associations")
@@ -220,8 +243,11 @@ def scan_associations(
 
     df_sub = _subsample(data, max_rows=max_rows, random_state=random_state)
 
-    target_columns = list(dict.fromkeys(treatment_names + outcome_names)) if scoped else columns
-    target_kinds = {name: _target_kind(df_sub[name]) for name in target_columns}
+    # Every column can end up as a `run_pairs` target: treatment/outcome
+    # columns for the scoped tables, and (session 10) every covariate for
+    # `covariate_table` too -- so `target_kinds` covers all of `columns`
+    # rather than just the designated treatment/outcome names.
+    target_kinds = {name: _target_kind(df_sub[name]) for name in columns}
 
     skipped: list[SkippedPair] = []
     plot_cache: dict[tuple[str, str], PairPlotData] = {}
@@ -264,16 +290,23 @@ def scan_associations(
             run_pairs(_scoped_pairs(columns, treatment_names)) if treatment_names else []
         )
         outcome_table = run_pairs(_scoped_pairs(columns, outcome_names)) if outcome_names else []
+        excluded = set(treatment_names) | set(outcome_names)
+        covariate_columns = [c for c in columns if c not in excluded]
+        covariate_table = (
+            run_pairs(_full_pairs(covariate_columns)) if len(covariate_columns) >= 2 else []
+        )
         full_table: list[PairResult] = []
     else:
         full_table = run_pairs(_full_pairs(columns))
         treatment_table = []
         outcome_table = []
+        covariate_table = []
 
     return AssociationScan(
         scoped=scoped,
         treatment_table=treatment_table,
         outcome_table=outcome_table,
+        covariate_table=covariate_table,
         full_table=full_table,
         plot_cache=plot_cache,
         skipped=skipped,

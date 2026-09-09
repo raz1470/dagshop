@@ -164,7 +164,13 @@ def _add_generate_demo_data_subparser(subparsers: argparse._SubParsersAction) ->
             "`launch` without a real dataset."
         ),
     )
-    demo.add_argument("output", type=Path, help="Path to write the generated CSV to.")
+    demo.add_argument(
+        "output",
+        type=Path,
+        nargs="?",
+        default=Path("inputs/demo.csv"),
+        help="Path to write the generated CSV to (default: inputs/demo.csv).",
+    )
     demo.add_argument(
         "--n-rows",
         type=int,
