@@ -29,12 +29,14 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Visualization",
 ]
 
-# Runtime dependencies. Empty for now -- nothing is built yet (see NOTES.md
-# build order). graph.py will need networkx, associate.py pandas/sklearn,
-# server.py fastapi/uvicorn. dowhy itself is NOT a dagshop dependency: the
-# DAG this tool exports is loaded into the user's own dowhy.gcm downstream,
-# per SCOPE.md.
-dependencies = []
+# Runtime dependencies, added as each module is built (see NOTES.md build
+# order). graph.py (built) needs networkx; associate.py will need
+# pandas/sklearn, server.py fastapi/uvicorn. dowhy itself is NOT a dagshop
+# dependency: the DAG this tool exports is loaded into the user's own
+# dowhy.gcm downstream, per SCOPE.md.
+dependencies = [
+    "networkx>=3.2",
+]
 
 [project.urls]
 Homepage = "https://github.com/raz1470/dagshop"
