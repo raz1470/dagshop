@@ -11,6 +11,7 @@ this file actually starts a live server.
 
 from __future__ import annotations
 
+import shlex
 import socket
 import time
 from unittest.mock import MagicMock
@@ -270,3 +271,54 @@ def test_open_browser_after_delay_uses_explicit_delay(monkeypatch):
     monkeypatch.setattr(cli.webbrowser, "open", lambda url: opened.append(url))
     cli._open_browser_after_delay("http://127.0.0.1:8000/", delay=0.0)
     assert opened == ["http://127.0.0.1:8000/"]
+
+
+# -- generate-demo-data --------------------------------------------------------
+
+
+def test_generate_demo_data_parser_defaults(tmp_path):
+    parser = cli._build_parser()
+    args = parser.parse_args(["generate-demo-data", str(tmp_path / "demo.csv")])
+    assert args.n_rows == 500
+    assert args.random_state == 0
+    assert args.force is False
+
+
+def test_generate_demo_data_writes_csv(tmp_path, capsys):
+    output = tmp_path / "demo.csv"
+    cli.main(["generate-demo-data", str(output), "--n-rows", "30", "--random-state", "2"])
+
+    assert output.exists()
+    written = pd.read_csv(output)
+    assert len(written) == 30
+
+    out = capsys.readouterr().out
+    assert "Wrote 30 rows" in out
+    assert "dagshop launch" in out
+    assert "--treatment treatment --outcome outcome" in out
+
+
+def test_generate_demo_data_refuses_to_overwrite_without_force(tmp_path, capsys):
+    output = tmp_path / "demo.csv"
+    output.write_text("existing content")
+    with pytest.raises(SystemExit):
+        cli.main(["generate-demo-data", str(output)])
+    assert "already exists" in capsys.readouterr().err
+    assert output.read_text() == "existing content"
+
+
+def test_generate_demo_data_force_overwrites(tmp_path):
+    output = tmp_path / "demo.csv"
+    output.write_text("stale")
+    cli.main(["generate-demo-data", str(output), "--force", "--n-rows", "10"])
+    assert len(pd.read_csv(output)) == 10
+
+
+def test_generate_demo_data_quotes_path_with_space_in_hint(tmp_path, capsys):
+    output_dir = tmp_path / "has space"
+    output_dir.mkdir()
+    output = output_dir / "demo.csv"
+    cli.main(["generate-demo-data", str(output), "--n-rows", "5"])
+    out = capsys.readouterr().out
+    hint_line = next(line for line in out.splitlines() if "dagshop launch" in line)
+    assert shlex.split(hint_line)[1:3] == ["launch", str(output)]
