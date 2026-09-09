@@ -37,7 +37,6 @@ import numpy as np
 import pandas as pd
 import pytest
 import uvicorn
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from dagshop.server import create_app
 
@@ -126,6 +125,16 @@ def test_shift_drag_creates_edge(live_server, page):
     create nothing -- the whole point of the modifier-key gesture is
     that both interactions coexist without a persistent mode toggle.
     """
+    # Imported here, not at module level: this module is collected (and
+    # so imported) by the `test`/`lint` CI jobs too, which deliberately
+    # install only the lean `test` dependency group without playwright
+    # (see pyproject.toml's [dependency-groups] comment) -- a top-level
+    # import broke that on the first attempt at this diagnostic (session
+    # 9: "ModuleNotFoundError: No module named 'playwright'" in the
+    # `test` job, which never even runs this function's body since the
+    # test is marker-deselected there).
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
     console_errors: list[str] = []
     page.on("console", lambda msg: msg.type == "error" and console_errors.append(msg.text))
     page.on("pageerror", lambda exc: console_errors.append(str(exc)))
@@ -222,6 +231,11 @@ def test_shift_drag_creates_edge(live_server, page):
             f"failure: {eh_state}. console errors: {console_errors}"
         ) from None
     page.click("#sign-plus")
+
+    # createEdge() (app.js) awaits a POST to /api/edges before calling
+    # cy.add(...) -- give that round-trip a chance to land instead of
+    # reading cy.edges() the instant the click handler returns.
+    page.wait_for_function("() => window.__dagshop.cy.edges().length > 0")
 
     edges = page.evaluate(
         "() => window.__dagshop.cy.edges().map((e) => "
