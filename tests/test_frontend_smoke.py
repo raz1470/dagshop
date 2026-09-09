@@ -168,6 +168,16 @@ def test_shift_drag_creates_edge(live_server, page):
     page.mouse.move(source["x"], source["y"])
     page.mouse.down()
     page.mouse.move(target["x"], target["y"], steps=10)
+    # edgehandles' `hoverDelay: 150` (app.js) defers actually setting
+    # `targetNode` until 150ms after the pointer arrives over it -- see
+    # the vendored cytoscape-edgehandles.js `preview()`, which schedules
+    # `applyPreview` via `setTimeout(..., options.hoverDelay)` rather
+    # than setting it synchronously. Releasing the mouse before that
+    # timer fires means `stop()` sees an empty `targetNode` and never
+    # emits `ehcomplete`, so the sign modal never opens -- a real mouse
+    # dwells here far longer than that without anyone noticing. Wait
+    # comfortably past the delay before mouseup.
+    page.wait_for_timeout(250)
     page.mouse.up()
     page.keyboard.up("Shift")
 
