@@ -30,14 +30,18 @@ classifiers = [
 ]
 
 # Runtime dependencies, added as each module is built (see NOTES.md build
-# order). graph.py (built) needs networkx; associate.py (built) needs
-# pandas/sklearn; server.py will need fastapi/uvicorn. dowhy itself is NOT
-# a dagshop dependency: the DAG this tool exports is loaded into the
-# user's own dowhy.gcm downstream, per SCOPE.md.
+# order). graph.py needs networkx; associate.py needs pandas/sklearn;
+# server.py needs fastapi + a plain (no [standard] extra, to keep the
+# dependency surface -- and telemetry audit surface, see SCOPE.md -- as
+# small as possible) uvicorn to run it. dowhy itself is NOT a dagshop
+# dependency: the DAG this tool exports is loaded into the user's own
+# dowhy.gcm downstream, per SCOPE.md.
 dependencies = [
     "networkx>=3.2",
     "pandas>=2.2",
     "scikit-learn>=1.4",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [project.urls]
@@ -46,16 +50,31 @@ Repository = "https://github.com/raz1470/dagshop"
 Issues = "https://github.com/raz1470/dagshop/issues"
 
 [dependency-groups]
-# `test` is the lean slice CI will install: package deps + pytest/ruff.
-# `dev` includes `test` plus local-only tooling via include-group, rather
-# than repeating pytest/pytest-cov/ruff directly.
+# `test` is the lean slice CI's `test`/`lint` jobs install: package deps
+# + pytest/ruff/httpx (httpx: FastAPI's TestClient needs it). `dev`
+# includes `test` plus local-only tooling via include-group, rather than
+# repeating pytest/pytest-cov/ruff directly.
+#
+# `frontend` is deliberately separate from both: it pulls in Playwright
+# plus a real Chromium download for the headless-browser smoke test
+# (tests/test_frontend_smoke.py, pytest marker "frontend", skipped by
+# default -- see [tool.pytest.ini_options] below). Keeping it out of
+# `dev` means the day-to-day local dev sync doesn't require a browser
+# download; CI's dedicated `frontend` job installs this group
+# explicitly.
 test = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.6",
+    "httpx>=0.27",
 ]
 dev = [
     "pre-commit>=3.0",
+    { include-group = "test" },
+]
+frontend = [
+    "playwright>=1.47",
+    "pytest-playwright>=0.5",
     { include-group = "test" },
 ]
 
@@ -80,6 +99,9 @@ indent-style = "space"
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+markers = [
+    "frontend: needs a live server + a headless browser (Playwright/Chromium). Skipped by default (see addopts); run explicitly with `pytest -m frontend` after `uv sync --group frontend && uv run playwright install --with-deps chromium`.",
+]
 addopts = [
     "-ra",
     "--strict-markers",
@@ -87,6 +109,8 @@ addopts = [
     "--assert=plain",
     "--cov=dagshop",
     "--cov-report=term-missing",
+    "-m",
+    "not frontend",
 ]
 
 [tool.coverage.run]
@@ -98,4 +122,5 @@ exclude_lines = [
     "pragma: no cover",
     "raise NotImplementedError",
     "if TYPE_CHECKING:",
+    'if __name__ == "__main__":',
 ]

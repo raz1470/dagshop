@@ -1,0 +1,617 @@
+"use strict";
+
+/**
+ * DAGshop workshop UI. Rough first pass (NOTES.md session 5): working,
+ * not polished. Vanilla JS, no build step, no framework -- matches
+ * "vendored, no CDN" static assets with nothing to bundle.
+ *
+ * Talks to server.py's REST API (one endpoint per user action -- see
+ * server.py's module docstring for the state-model decision behind
+ * that). Cytoscape.js draws the canvas; cytoscape-edgehandles handles
+ * click-drag edge creation; Plotly renders the pairwise plot modal from
+ * associate.py's cached data, fetched on demand per SCOPE.md.
+ */
+
+// -- DOM refs -------------------------------------------------------------
+
+const cyContainer = document.getElementById("cy");
+const banner = document.getElementById("banner");
+const datasetSummary = document.getElementById("dataset-summary");
+const tablesContainer = document.getElementById("tables-container");
+const skippedContainer = document.getElementById("skipped-container");
+
+const plotModal = document.getElementById("plot-modal");
+const plotModalTitle = document.getElementById("plot-modal-title");
+const plotModalBody = document.getElementById("plot-modal-body");
+
+const signModal = document.getElementById("sign-modal");
+const signModalSubtitle = document.getElementById("sign-modal-subtitle");
+const signPlusBtn = document.getElementById("sign-plus");
+const signMinusBtn = document.getElementById("sign-minus");
+const signCancelBtn = document.getElementById("sign-cancel");
+
+const pathModal = document.getElementById("path-modal");
+const pathModalTitle = document.getElementById("path-modal-title");
+const pathModalInput = document.getElementById("path-modal-input");
+const pathModalConfirm = document.getElementById("path-modal-confirm");
+const pathModalCancel = document.getElementById("path-modal-cancel");
+
+let cy = null;
+
+// -- API helper -------------------------------------------------------------
+
+async function api(path, method = "GET", body) {
+  const res = await fetch(path, {
+    method,
+    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const payload = await res.json();
+      if (payload && payload.detail) detail = payload.detail;
+    } catch (_e) {
+      // response body wasn't JSON; fall back to statusText
+    }
+    const err = new Error(detail);
+    err.status = res.status;
+    throw err;
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+function edgeId(source, target) {
+  // "=>" rather than "->" to reduce (not eliminate) collision risk with
+  // real column names. A column literally containing "=>" is a known,
+  // ignored v1 edge case.
+  return `${source}=>${target}`;
+}
+
+// -- banner ------------------------------------------------------------------
+
+function showBanner(message) {
+  banner.textContent = message;
+  banner.classList.remove("hidden");
+}
+
+function hideBanner() {
+  banner.classList.add("hidden");
+}
+
+// -- generic modal helpers ----------------------------------------------------
+
+function showModal(modal) {
+  modal.classList.remove("hidden");
+}
+
+function hideModal(modal) {
+  modal.classList.add("hidden");
+}
+
+document.querySelectorAll("[data-close]").forEach((btn) => {
+  btn.addEventListener("click", () => hideModal(document.getElementById(btn.dataset.close)));
+});
+
+// -- dataset summary -----------------------------------------------------------
+
+function renderDatasetSummary(health) {
+  const scanKind = health.scoped ? "scoped scan (treatment/outcome-focused)" : "full pairwise scan";
+  datasetSummary.textContent =
+    `${health.data_path} — ${health.n_rows} rows × ${health.n_columns} columns — ${scanKind}`;
+}
+
+// -- ranking tables --------------------------------------------------------------
+
+function formatScore(row) {
+  const label = row.score_name === "roc_auc" ? "roc_auc" : "r2";
+  return `${row.score.toFixed(3)} (${label})`;
+}
+
+function buildTable(title, rows) {
+  const table = document.createElement("table");
+  table.className = "rank-table";
+  const caption = document.createElement("caption");
+  caption.textContent = `${title} (${rows.length})`;
+  table.appendChild(caption);
+
+  const thead = document.createElement("thead");
+  thead.innerHTML = "<tr><th>Predictor</th><th>Target</th><th>Score</th><th>n</th></tr>";
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(row.predictor)}</td>
+      <td>${escapeHtml(row.target)}</td>
+      <td class="score-cell">${formatScore(row)}</td>
+      <td>${row.n_used}</td>
+    `;
+    tr.addEventListener("click", () => openPlot(row.predictor, row.target));
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
+function renderTables(tables) {
+  tablesContainer.innerHTML = "";
+  if (tables.scoped) {
+    if (tables.treatment_table.length > 0) {
+      tablesContainer.appendChild(buildTable("Associated with treatment(s)", tables.treatment_table));
+    }
+    if (tables.outcome_table.length > 0) {
+      tablesContainer.appendChild(buildTable("Associated with outcome(s)", tables.outcome_table));
+    }
+  } else {
+    tablesContainer.appendChild(buildTable("Pairwise associations", tables.full_table));
+  }
+
+  skippedContainer.innerHTML = "";
+  if (tables.skipped.length > 0) {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = `${tables.skipped.length} pair(s) skipped during the scan`;
+    details.appendChild(summary);
+    const ul = document.createElement("ul");
+    for (const s of tables.skipped) {
+      const li = document.createElement("li");
+      li.textContent = `${s.predictor} → ${s.target}: ${s.reason}`;
+      ul.appendChild(li);
+    }
+    details.appendChild(ul);
+    skippedContainer.appendChild(details);
+  }
+}
+
+function escapeHtml(value) {
+  const div = document.createElement("div");
+  div.textContent = value;
+  return div.innerHTML;
+}
+
+// -- plot modal ------------------------------------------------------------------
+
+async function openPlot(predictor, target) {
+  plotModalTitle.textContent = `${predictor} → ${target}`;
+  plotModalBody.innerHTML = "<p>Loading…</p>";
+  showModal(plotModal);
+  try {
+    const data = await api(`/api/plot/${encodeURIComponent(predictor)}/${encodeURIComponent(target)}`);
+    plotModalBody.innerHTML = "";
+    const plotDiv = document.createElement("div");
+    plotDiv.style.width = "100%";
+    plotDiv.style.height = "420px";
+    plotModalBody.appendChild(plotDiv);
+    Plotly.newPlot(
+      plotDiv,
+      [
+        {
+          x: data.x,
+          y: data.y,
+          mode: "markers",
+          type: "scatter",
+          name: "observed",
+          marker: { size: 5, opacity: 0.55, color: "#6b6b76" },
+        },
+        {
+          x: data.grid_x,
+          y: data.grid_prediction,
+          mode: "lines",
+          type: "scatter",
+          name: "model prediction",
+          line: { color: "#2e6bd6", width: 2 },
+        },
+      ],
+      {
+        margin: { t: 10, r: 10, b: 40, l: 50 },
+        xaxis: { title: predictor },
+        yaxis: { title: target },
+        legend: { orientation: "h" },
+      },
+      { displaylogo: false, responsive: true },
+    );
+  } catch (err) {
+    plotModalBody.innerHTML =
+      err.status === 404
+        ? "<p>No cached association plot for this pair (only pairs the scan actually ran are cached).</p>"
+        : `<p>Could not load plot: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+// -- sign modal (every edge needs a user-asserted sign, no default) -----------------
+
+function pickSign(source, target) {
+  return new Promise((resolve) => {
+    signModalSubtitle.textContent = `${source} → ${target}`;
+    showModal(signModal);
+
+    function cleanup() {
+      signPlusBtn.removeEventListener("click", onPlus);
+      signMinusBtn.removeEventListener("click", onMinus);
+      signCancelBtn.removeEventListener("click", onCancel);
+      hideModal(signModal);
+    }
+    function onPlus() {
+      cleanup();
+      resolve("+");
+    }
+    function onMinus() {
+      cleanup();
+      resolve("-");
+    }
+    function onCancel() {
+      cleanup();
+      resolve(null);
+    }
+    signPlusBtn.addEventListener("click", onPlus);
+    signMinusBtn.addEventListener("click", onMinus);
+    signCancelBtn.addEventListener("click", onCancel);
+  });
+}
+
+// -- path modal (export/save/load all take a filesystem path) -----------------------
+
+function promptPath(title, defaultValue) {
+  return new Promise((resolve) => {
+    pathModalTitle.textContent = title;
+    pathModalInput.value = defaultValue || "";
+    showModal(pathModal);
+    pathModalInput.focus();
+    pathModalInput.select();
+
+    function cleanup() {
+      pathModalConfirm.removeEventListener("click", onConfirm);
+      pathModalCancel.removeEventListener("click", onCancel);
+      hideModal(pathModal);
+    }
+    function onConfirm() {
+      const value = pathModalInput.value.trim();
+      cleanup();
+      resolve(value || null);
+    }
+    function onCancel() {
+      cleanup();
+      resolve(null);
+    }
+    pathModalConfirm.addEventListener("click", onConfirm);
+    pathModalCancel.addEventListener("click", onCancel);
+  });
+}
+
+// -- canvas context menu ------------------------------------------------------------
+
+let activeMenu = null;
+
+function closeContextMenu() {
+  if (activeMenu) {
+    activeMenu.remove();
+    activeMenu = null;
+  }
+}
+document.addEventListener("click", closeContextMenu);
+
+function showContextMenu(x, y, items) {
+  closeContextMenu();
+  const menu = document.createElement("div");
+  menu.className = "cy-context-menu";
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  for (const { label, onClick } of items) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    btn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      closeContextMenu();
+      onClick();
+    });
+    menu.appendChild(btn);
+  }
+  document.body.appendChild(menu);
+  activeMenu = menu;
+}
+
+// -- node/edge mutations --------------------------------------------------------------
+
+async function updateNodePosition(node) {
+  const { x, y } = node.position();
+  try {
+    await api(`/api/nodes/${encodeURIComponent(node.id())}/position`, "PUT", { x, y });
+  } catch (err) {
+    showBanner(`Could not save position for "${node.id()}": ${err.message}`);
+  }
+}
+
+async function deleteNode(name) {
+  if (!window.confirm(`Delete node "${name}"? This also removes any edges touching it.`)) return;
+  try {
+    await api(`/api/nodes/${encodeURIComponent(name)}`, "DELETE");
+    const el = cy.getElementById(name);
+    if (el.length > 0) el.remove(); // cytoscape removes incident edges too
+  } catch (err) {
+    showBanner(`Could not delete node "${name}": ${err.message}`);
+  }
+}
+
+async function deleteEdge(source, target) {
+  try {
+    await api(`/api/edges/${encodeURIComponent(source)}/${encodeURIComponent(target)}`, "DELETE");
+    const el = cy.getElementById(edgeId(source, target));
+    if (el.length > 0) el.remove();
+  } catch (err) {
+    showBanner(`Could not delete edge "${source} → ${target}": ${err.message}`);
+  }
+}
+
+async function flipSign(source, target, currentSign) {
+  const newSign = currentSign === "+" ? "-" : "+";
+  try {
+    const result = await api(
+      `/api/edges/${encodeURIComponent(source)}/${encodeURIComponent(target)}/sign`,
+      "PUT",
+      { sign: newSign },
+    );
+    cy.getElementById(edgeId(source, target)).data("sign", result.sign);
+  } catch (err) {
+    showBanner(`Could not update sign for "${source} → ${target}": ${err.message}`);
+  }
+}
+
+async function createEdge(source, target) {
+  const sign = await pickSign(source, target);
+  if (sign === null) return; // cancelled: no edge, matches "no data-derived default"
+  try {
+    const result = await api("/api/edges", "POST", { source, target, sign });
+    cy.add({
+      group: "edges",
+      data: { id: edgeId(source, target), source, target, sign: result.sign },
+    });
+    if (result.cycle_warning) {
+      showBanner(`Cycle warning: ${result.cycle_warning}`);
+    } else {
+      hideBanner();
+    }
+  } catch (err) {
+    showBanner(`Could not add edge "${source} → ${target}": ${err.message}`);
+  }
+}
+
+// -- cytoscape setup ------------------------------------------------------------------
+
+function toCyElements(graph) {
+  const nodes = graph.nodes.map((n) => ({
+    group: "nodes",
+    data: { id: n.name, role: n.role },
+    position: { x: n.x ?? 400, y: n.y ?? 400 },
+  }));
+  const edges = graph.edges.map((e) => ({
+    group: "edges",
+    data: { id: edgeId(e.source, e.target), source: e.source, target: e.target, sign: e.sign },
+  }));
+  return [...nodes, ...edges];
+}
+
+function cyStyle() {
+  return [
+    {
+      selector: "node",
+      style: {
+        "background-color": "#8a8a94",
+        label: "data(id)",
+        width: 34,
+        height: 34,
+        "font-size": 10,
+        "text-valign": "bottom",
+        "text-margin-y": 4,
+        "border-width": 1,
+        "border-color": "#00000022",
+      },
+    },
+    { selector: 'node[role = "treatment"]', style: { "background-color": "#2e6bd6" } },
+    { selector: 'node[role = "outcome"]', style: { "background-color": "#d6642e" } },
+    {
+      selector: "edge",
+      style: {
+        width: 2,
+        "curve-style": "bezier",
+        "target-arrow-shape": "triangle",
+        "line-color": "#8a8a94",
+        "target-arrow-color": "#8a8a94",
+        label: "data(sign)",
+        "font-size": 12,
+        "text-background-color": "#fbfbfc",
+        "text-background-opacity": 1,
+        "text-background-padding": 2,
+      },
+    },
+    {
+      selector: 'edge[sign = "+"]',
+      style: { "line-color": "#1f8a4c", "target-arrow-color": "#1f8a4c" },
+    },
+    {
+      selector: 'edge[sign = "-"]',
+      style: { "line-color": "#c23b3b", "target-arrow-color": "#c23b3b" },
+    },
+    {
+      selector: ".eh-handle",
+      style: {
+        "background-color": "#2e6bd6",
+        width: 10,
+        height: 10,
+        opacity: 0.9,
+        "border-width": 0,
+      },
+    },
+    { selector: ".eh-ghost-edge", style: { "line-style": "dashed" } },
+  ];
+}
+
+function initCytoscape(graph) {
+  cy = cytoscape({
+    container: cyContainer,
+    elements: toCyElements(graph),
+    style: cyStyle(),
+    layout: { name: "preset" }, // positions come from server.py's initial layout
+    minZoom: 0.2,
+    maxZoom: 3,
+  });
+
+  // Treatment/outcome nodes are "pinned" per SCOPE.md step 2: locked by
+  // default so a chaotic brainstorm doesn't drag them off their fixed
+  // column. Right-click offers "Unlock position" for the rare case
+  // someone wants to move one anyway (judgment call -- see NOTES.md).
+  cy.nodes().forEach((node) => {
+    if (node.data("role")) node.lock();
+  });
+
+  cyContainer.addEventListener("contextmenu", (evt) => evt.preventDefault());
+
+  const eh = cy.edgehandles({
+    canConnect: (sourceNode, targetNode) => !sourceNode.same(targetNode),
+    edgeParams: () => ({}),
+    hoverDelay: 150,
+    snap: false,
+  });
+
+  cy.on("ehcomplete", (_evt, sourceNode, targetNode, addedEdge) => {
+    addedEdge.remove(); // ephemeral edgehandles edge: not real until signed + saved
+    const id = edgeId(sourceNode.id(), targetNode.id());
+    if (cy.getElementById(id).length > 0) {
+      showBanner(`Edge "${sourceNode.id()} → ${targetNode.id()}" already exists.`);
+      return;
+    }
+    createEdge(sourceNode.id(), targetNode.id());
+  });
+
+  cy.on("dragfree", "node", (evt) => updateNodePosition(evt.target));
+
+  cy.on("tap", "edge", (evt) => {
+    const edge = evt.target;
+    openPlot(edge.data("source"), edge.data("target"));
+  });
+
+  cy.on("cxttap", "node", (evt) => {
+    const node = evt.target;
+    const pos = evt.originalEvent;
+    showContextMenu(pos.clientX, pos.clientY, [
+      {
+        label: node.locked() ? "Unlock position" : "Lock position",
+        onClick: () => (node.locked() ? node.unlock() : node.lock()),
+      },
+      { label: "Delete node", onClick: () => deleteNode(node.id()) },
+    ]);
+  });
+
+  cy.on("cxttap", "edge", (evt) => {
+    const edge = evt.target;
+    const pos = evt.originalEvent;
+    showContextMenu(pos.clientX, pos.clientY, [
+      {
+        label: `Flip sign (currently ${edge.data("sign")})`,
+        onClick: () => flipSign(edge.data("source"), edge.data("target"), edge.data("sign")),
+      },
+      { label: "Delete edge", onClick: () => deleteEdge(edge.data("source"), edge.data("target")) },
+    ]);
+  });
+
+  return eh;
+}
+
+async function reloadGraph() {
+  const graph = await api("/api/graph");
+  cy.elements().remove();
+  cy.add(toCyElements(graph));
+  cy.nodes().forEach((node) => {
+    if (node.data("role")) node.lock();
+  });
+}
+
+// -- topbar actions ----------------------------------------------------------------
+
+function wireTopbar() {
+  document.getElementById("btn-validate").addEventListener("click", async () => {
+    try {
+      const result = await api("/api/validate");
+      if (result.valid) {
+        showBanner("Valid: no cycles. Ready to export.");
+      } else {
+        const formatted = result.cycles.map((c) => [...c, c[0]].join(" → ")).join("; ");
+        showBanner(`Not export-ready: ${result.cycles.length} cycle(s): ${formatted}`);
+      }
+    } catch (err) {
+      showBanner(`Could not validate: ${err.message}`);
+    }
+  });
+
+  document.getElementById("btn-export-json").addEventListener("click", async () => {
+    const path = await promptPath("Export DAG as JSON — file path", "dag_export.json");
+    if (!path) return;
+    try {
+      await api("/api/export", "POST", { path, format: "json" });
+      showBanner(`Exported to ${path}`);
+    } catch (err) {
+      showBanner(`Export failed: ${err.message}`);
+    }
+  });
+
+  document.getElementById("btn-export-graphml").addEventListener("click", async () => {
+    const path = await promptPath("Export DAG as GraphML — file path", "dag_export.graphml");
+    if (!path) return;
+    try {
+      await api("/api/export", "POST", { path, format: "graphml" });
+      showBanner(`Exported to ${path}`);
+    } catch (err) {
+      showBanner(`Export failed: ${err.message}`);
+    }
+  });
+
+  document.getElementById("btn-save-session").addEventListener("click", async () => {
+    const path = await promptPath("Save session — file path", "dagshop_session.json");
+    if (!path) return;
+    try {
+      await api("/api/session/save", "POST", { path });
+      showBanner(`Session saved to ${path}`);
+    } catch (err) {
+      showBanner(`Save failed: ${err.message}`);
+    }
+  });
+
+  document.getElementById("btn-load-session").addEventListener("click", async () => {
+    const path = await promptPath("Load session — file path", "dagshop_session.json");
+    if (!path) return;
+    try {
+      await api("/api/session/load", "POST", { path });
+      await reloadGraph();
+      showBanner(`Session loaded from ${path}. Ranking tables are unchanged (tied to the data.csv this server was launched with, not to the session file).`);
+    } catch (err) {
+      showBanner(`Load failed: ${err.message}`);
+    }
+  });
+}
+
+// -- init ------------------------------------------------------------------------
+
+async function init() {
+  try {
+    const [health, graph, tables] = await Promise.all([
+      api("/api/health"),
+      api("/api/graph"),
+      api("/api/tables"),
+    ]);
+    renderDatasetSummary(health);
+    renderTables(tables);
+    initCytoscape(graph);
+    wireTopbar();
+    // Exposed for the Playwright smoke test (test_frontend_smoke.py) and
+    // for manual debugging in the browser console -- not used by app.js
+    // itself, which keeps `cy` as a plain module-level variable above.
+    window.__dagshop = { cy };
+  } catch (err) {
+    showBanner(`Failed to load workshop session: ${err.message}`);
+  }
+}
+
+document.addEventListener("DOMContentLoaded", init);
