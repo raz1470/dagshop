@@ -14,5 +14,11 @@ htmlcov/
 NOTES.md
 notes_archive/
 
+# Scoping/preferences docs: internal, kept local, never committed
+# (Decision, 2026-09-09: Ryan chose to keep these local rather than
+# version-controlled.)
+SCOPE.md
+PREFERENCES.md
+
 # Scratch preview and mockup output, rebuilt each session
 Claude outputs/
