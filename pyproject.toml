@@ -44,6 +44,9 @@ dependencies = [
     "uvicorn>=0.30",
 ]
 
+[project.scripts]
+dagshop = "dagshop.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/raz1470/dagshop"
 Repository = "https://github.com/raz1470/dagshop"
