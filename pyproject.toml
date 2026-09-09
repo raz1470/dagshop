@@ -1,0 +1,97 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dagshop"
+version = "0.1.0"
+description = "Interactive DAG-drawing workshop tool for PM and data scientist pairs, producing DAGs for dowhy.gcm causal modeling"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Ryan O'Sullivan", email = "raz1470@hotmail.co.uk" }]
+keywords = [
+    "causal-inference",
+    "causal-discovery",
+    "dag",
+    "dowhy",
+    "causal-graph",
+    "workshop-tool",
+]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+
+# Runtime dependencies. Empty for now -- nothing is built yet (see NOTES.md
+# build order). graph.py will need networkx, associate.py pandas/sklearn,
+# server.py fastapi/uvicorn. dowhy itself is NOT a dagshop dependency: the
+# DAG this tool exports is loaded into the user's own dowhy.gcm downstream,
+# per SCOPE.md.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/raz1470/dagshop"
+Repository = "https://github.com/raz1470/dagshop"
+Issues = "https://github.com/raz1470/dagshop/issues"
+
+[dependency-groups]
+# `test` is the lean slice CI will install: package deps + pytest/ruff.
+# `dev` includes `test` plus local-only tooling via include-group, rather
+# than repeating pytest/pytest-cov/ruff directly.
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+dev = [
+    "pre-commit>=3.0",
+    { include-group = "test" },
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dagshop"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/README.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--assert=plain",
+    "--cov=dagshop",
+    "--cov-report=term-missing",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["dagshop"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]

@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+.coverage*
+htmlcov/
+.DS_Store
+
+# Internal working log, kept locally, not published
+NOTES.md
+notes_archive/
+
+# Scratch preview and mockup output, rebuilt each session
+Claude outputs/
