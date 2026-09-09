@@ -50,13 +50,14 @@ def unscoped_csv(tmp_path):
 
 @pytest.fixture
 def scoped_csv(tmp_path):
-    """One treatment, one outcome, plus a plain covariate."""
+    """One treatment, one outcome, plus two plain covariates."""
     rng = np.random.default_rng(RANDOM_STATE)
     n = 80
     treated = rng.integers(0, 2, size=n)
     frame = pd.DataFrame(
         {
             "age": rng.normal(50, 10, size=n),
+            "prior_engagement": rng.normal(size=n),
             "treated": treated,
             "outcome": rng.normal(size=n) + treated * 2.0,
         }
@@ -190,6 +191,7 @@ def test_tables_unscoped_uses_full_table(client):
     assert body["full_table"] != []
     assert body["treatment_table"] == []
     assert body["outcome_table"] == []
+    assert body["covariate_table"] == []
     row = body["full_table"][0]
     assert set(row) == {"predictor", "target", "score", "score_name", "n_used"}
 
@@ -200,6 +202,11 @@ def test_tables_scoped_splits_treatment_and_outcome(scoped_client):
     assert body["full_table"] == []
     assert {row["target"] for row in body["treatment_table"]} == {"treated"}
     assert {row["target"] for row in body["outcome_table"]} == {"outcome"}
+    # covariates = {age, prior_engagement}: every ordered pair, 2 * 1 = 2.
+    assert {(row["predictor"], row["target"]) for row in body["covariate_table"]} == {
+        ("age", "prior_engagement"),
+        ("prior_engagement", "age"),
+    }
 
 
 def test_plot_found_for_scanned_pair(client):

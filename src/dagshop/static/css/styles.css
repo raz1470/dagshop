@@ -135,6 +135,12 @@ button {
 
 /* -- ranking tables ---------------------------------------------------- */
 
+#tables-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
 .rank-table {
   width: 100%;
   border-collapse: collapse;
@@ -202,7 +208,7 @@ button {
   background: var(--color-outcome);
 }
 
-.legend-other {
+.legend-covariate {
   background: var(--color-node);
 }
 

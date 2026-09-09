@@ -22,3 +22,9 @@ PREFERENCES.md
 
 # Scratch preview and mockup output, rebuilt each session
 Claude outputs/
+
+# Working data/exports for local sessions; folders themselves are tracked
+inputs/*
+outputs/*
+!inputs/.gitkeep
+!outputs/.gitkeep

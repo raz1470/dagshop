@@ -145,6 +145,9 @@ function renderTables(tables) {
     if (tables.outcome_table.length > 0) {
       tablesContainer.appendChild(buildTable("Associated with outcome(s)", tables.outcome_table));
     }
+    if (tables.covariate_table.length > 0) {
+      tablesContainer.appendChild(buildTable("Between covariates", tables.covariate_table));
+    }
   } else {
     tablesContainer.appendChild(buildTable("Pairwise associations", tables.full_table));
   }
@@ -206,10 +209,12 @@ async function openPlot(predictor, target) {
         },
       ],
       {
-        margin: { t: 10, r: 10, b: 40, l: 50 },
+        margin: { t: 30, r: 10, b: 40, l: 50 },
         xaxis: { title: predictor },
         yaxis: { title: target },
-        legend: { orientation: "h" },
+        // Anchored just above the plotting area (not inside it) so the legend
+        // never overlaps markers/prediction line regardless of data range.
+        legend: { orientation: "h", x: 1, xanchor: "right", y: 1, yanchor: "bottom" },
       },
       { displaylogo: false, responsive: true },
     );
@@ -617,7 +622,7 @@ function wireTopbar() {
   });
 
   document.getElementById("btn-export-json").addEventListener("click", async () => {
-    const path = await promptPath("Export DAG as JSON — file path", "dag_export.json");
+    const path = await promptPath("Export DAG as JSON — file path", "outputs/dag_export.json");
     if (!path) return;
     try {
       await api("/api/export", "POST", { path, format: "json" });
@@ -628,7 +633,7 @@ function wireTopbar() {
   });
 
   document.getElementById("btn-export-graphml").addEventListener("click", async () => {
-    const path = await promptPath("Export DAG as GraphML — file path", "dag_export.graphml");
+    const path = await promptPath("Export DAG as GraphML — file path", "outputs/dag_export.graphml");
     if (!path) return;
     try {
       await api("/api/export", "POST", { path, format: "graphml" });
@@ -639,7 +644,7 @@ function wireTopbar() {
   });
 
   document.getElementById("btn-save-session").addEventListener("click", async () => {
-    const path = await promptPath("Save session — file path", "dagshop_session.json");
+    const path = await promptPath("Save session — file path", "outputs/dagshop_session.json");
     if (!path) return;
     try {
       await api("/api/session/save", "POST", { path });
@@ -650,7 +655,7 @@ function wireTopbar() {
   });
 
   document.getElementById("btn-load-session").addEventListener("click", async () => {
-    const path = await promptPath("Load session — file path", "dagshop_session.json");
+    const path = await promptPath("Load session — file path", "outputs/dagshop_session.json");
     if (!path) return;
     try {
       await api("/api/session/load", "POST", { path });

@@ -11,6 +11,7 @@ this file actually starts a live server.
 
 from __future__ import annotations
 
+import pathlib
 import shlex
 import socket
 import time
@@ -282,6 +283,12 @@ def test_generate_demo_data_parser_defaults(tmp_path):
     assert args.n_rows == 500
     assert args.random_state == 0
     assert args.force is False
+
+
+def test_generate_demo_data_output_defaults_to_inputs_demo_csv():
+    parser = cli._build_parser()
+    args = parser.parse_args(["generate-demo-data"])
+    assert args.output == pathlib.Path("inputs/demo.csv")
 
 
 def test_generate_demo_data_writes_csv(tmp_path, capsys):
