@@ -1,12 +1,20 @@
-"""`dagshop launch data.csv` entrypoint and internal PyPI packaging.
+"""`dagshop` command-line entrypoints and internal PyPI packaging.
 
-Last module in the build order (SCOPE.md build order step 4). Wraps
-`server.py`'s `create_app` (the entire boundary this module owns, per
-`server.py`'s own module docstring) with argument parsing and a uvicorn
-run loop; no application logic lives here.
+Last module in the build order (SCOPE.md build order step 4). Two
+subcommands:
 
-Decisions from NOTES.md session 6, all asked of and confirmed by Ryan
-before writing this module:
+- `dagshop launch data.csv` -- wraps `server.py`'s `create_app` (the
+  entire boundary this module owns, per `server.py`'s own module
+  docstring) with argument parsing and a uvicorn run loop; no
+  application logic lives here.
+- `dagshop generate-demo-data OUTPUT.csv` -- wraps `demo_data.py`'s
+  `make_demo_data` (SCOPE.md's "Manual testing" section), for someone
+  without a real dataset yet to generate one with a known causal
+  structure and try `launch` against it. Added session 7, after Ryan
+  asked for a way to test the app without his own data.
+
+Decisions from NOTES.md session 6 (the `launch` subcommand), all asked
+of and confirmed by Ryan before writing this module:
 
 - **CLI framework: stdlib `argparse`.** Zero new dependency, so no new
   entry on SCOPE.md's dependency-telemetry-audit list.
@@ -21,20 +29,29 @@ before writing this module:
   correct wheel/sdist; it does not add a publish workflow. Revisit once
   a registry is chosen (see NOTES.md session 6 and SCOPE.md open items).
 - **`--host`/`--port` flags, browser auto-open, and `--session` resume**
-  are all in scope for this slice (Ryan picked all three when asked
-  which launch-time behaviors to add).
+  are all in scope for the `launch` subcommand (Ryan picked all three
+  when asked which launch-time behaviors to add).
 
-Not built here: the association-scan defaults duplicated below
-(`max_rows`, `test_size`, `random_state`, `plot_grid_size`) intentionally
-mirror `server.create_app`'s own defaults exactly, so `dagshop launch
-data.csv` with no flags behaves identically to calling `create_app` with
-no keyword overrides. If those defaults ever change in `server.py`,
-change them here too.
+Decision from NOTES.md session 7 (the `generate-demo-data` subcommand,
+asked of and confirmed by Ryan before writing it): ships as a real
+subcommand rather than a standalone dev script under `scripts/`, so
+anyone who `pip install`s dagshop without their own data yet can try
+the tool immediately. This does add a small, permanent, user-facing
+surface for what's really a testing convenience -- the trade-off Ryan
+picked over keeping it dev-only.
+
+Not built here: the association-scan defaults duplicated in `launch`
+below (`max_rows`, `test_size`, `random_state`, `plot_grid_size`)
+intentionally mirror `server.create_app`'s own defaults exactly, so
+`dagshop launch data.csv` with no flags behaves identically to calling
+`create_app` with no keyword overrides. If those defaults ever change
+in `server.py`, change them here too.
 """
 
 from __future__ import annotations
 
 import argparse
+import shlex
 import socket
 import threading
 import time
@@ -44,6 +61,7 @@ from pathlib import Path
 
 import uvicorn
 
+from dagshop.demo_data import make_demo_data
 from dagshop.server import create_app
 
 _BROWSER_OPEN_DELAY_SECONDS = 1.0
@@ -55,7 +73,12 @@ def _build_parser() -> argparse.ArgumentParser:
         description=("Interactive DAG-drawing workshop tool for PM and data scientist pairs."),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    _add_launch_subparser(subparsers)
+    _add_generate_demo_data_subparser(subparsers)
+    return parser
 
+
+def _add_launch_subparser(subparsers: argparse._SubParsersAction) -> None:
     launch = subparsers.add_parser(
         "launch",
         help="Launch the DAGshop workshop UI for a CSV dataset.",
@@ -131,7 +154,36 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not automatically open a browser tab once the server is up.",
     )
-    return parser
+
+
+def _add_generate_demo_data_subparser(subparsers: argparse._SubParsersAction) -> None:
+    demo = subparsers.add_parser(
+        "generate-demo-data",
+        help=(
+            "Write a synthetic CSV with a known causal structure, for trying "
+            "`launch` without a real dataset."
+        ),
+    )
+    demo.add_argument("output", type=Path, help="Path to write the generated CSV to.")
+    demo.add_argument(
+        "--n-rows",
+        type=int,
+        default=500,
+        metavar="N",
+        help="Number of rows to generate (default: 500).",
+    )
+    demo.add_argument(
+        "--random-state",
+        type=int,
+        default=0,
+        metavar="SEED",
+        help="Random seed (default: 0).",
+    )
+    demo.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite OUTPUT if it already exists.",
+    )
 
 
 def _check_port_available(parser: argparse.ArgumentParser, host: str, port: int) -> None:
@@ -180,10 +232,7 @@ def _open_browser_after_delay(url: str, delay: float | None = None) -> None:
     webbrowser.open(url)
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-
+def _run_launch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if not args.data.exists():
         parser.error(f"data file not found: {args.data}")
     if args.session is not None and not args.session.exists():
@@ -210,6 +259,44 @@ def main(argv: Sequence[str] | None = None) -> None:
         threading.Thread(target=_open_browser_after_delay, args=(url,), daemon=True).start()
 
     uvicorn.run(app, host=args.host, port=args.port)
+
+
+def _run_generate_demo_data(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    if args.output.exists() and not args.force:
+        parser.error(
+            f"{args.output} already exists. Pass --force to overwrite, "
+            "or choose a different output path."
+        )
+
+    data = make_demo_data(n_rows=args.n_rows, random_state=args.random_state)
+    data.to_csv(args.output, index=False)
+
+    print(f"Wrote {len(data)} rows to {args.output}")
+    print()
+    print("Ground truth (see dagshop.demo_data's module docstring for exact coefficients):")
+    print("  confounders:  age, prior_engagement")
+    print("  treatment:    treatment (binary)")
+    print("  mediator:     mediator")
+    print("  outcome:      outcome")
+    print("  noise:        unrelated_score, unrelated_flag (should rank low either table)")
+    print()
+    print("Try:")
+    print(
+        f"  dagshop launch {shlex.quote(str(args.output))} --treatment treatment --outcome outcome"
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command == "launch":
+        _run_launch(args, parser)
+    else:
+        # argparse's subparsers (dest="command", required=True) only
+        # ever hand back "launch" or "generate-demo-data", so this is
+        # the generate-demo-data branch, not an unchecked fallback.
+        _run_generate_demo_data(args, parser)
 
 
 if __name__ == "__main__":
