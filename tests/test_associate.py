@@ -120,9 +120,19 @@ def test_scoped_scan_produces_treatment_and_outcome_tables() -> None:
     assert {r.predictor for r in scan.treatment_table} == {"y", "z", "w"}
     assert {r.predictor for r in scan.outcome_table} == {"x", "z", "w"}
     # covariates = columns minus treatment(x)/outcome(y) = {z, w}: every
-    # ordered pair among them, c * (c - 1) = 2 * 1 = 2.
-    assert len(scan.covariate_table) == 2
-    assert {(r.predictor, r.target) for r in scan.covariate_table} == {("z", "w"), ("w", "z")}
+    # *other* column (including x and y) vs each covariate-as-target,
+    # same shape as treatment_table/outcome_table -- 2 targets * 3
+    # predictors each = 6.
+    assert len(scan.covariate_table) == 6
+    assert {r.target for r in scan.covariate_table} == {"z", "w"}
+    assert {(r.predictor, r.target) for r in scan.covariate_table} == {
+        ("x", "z"),
+        ("y", "z"),
+        ("w", "z"),
+        ("x", "w"),
+        ("y", "w"),
+        ("z", "w"),
+    }
 
 
 def test_scoped_scan_with_only_treatments_leaves_outcome_table_empty() -> None:
@@ -133,10 +143,20 @@ def test_scoped_scan_with_only_treatments_leaves_outcome_table_empty() -> None:
     assert scan.treatment_table != []
 
 
-def test_covariate_table_empty_when_fewer_than_two_covariates() -> None:
-    # Only "z" is left over once x/y are designated: not enough covariates
-    # to form an ordered pair.
+def test_covariate_table_populated_with_a_single_remaining_covariate() -> None:
+    # Only "z" is left over once x/y are designated -- still a valid
+    # target, scanned against every *other* column (x and y), same as
+    # treatment_table/outcome_table would for a lone treatment/outcome.
     data = _linear_relationship(n=200)
+    scan = scan_associations(data, treatments=["x"], outcomes=["y"])
+    assert len(scan.covariate_table) == 2
+    assert {(r.predictor, r.target) for r in scan.covariate_table} == {("x", "z"), ("y", "z")}
+
+
+def test_covariate_table_empty_when_no_covariates_remain() -> None:
+    # Every column is a designated treatment or outcome: no covariate
+    # left to ever be a target.
+    data = _linear_relationship(n=200)[["x", "y"]]
     scan = scan_associations(data, treatments=["x"], outcomes=["y"])
     assert scan.covariate_table == []
 

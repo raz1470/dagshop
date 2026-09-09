@@ -121,6 +121,86 @@ The exported JSON/GraphML is meant to be loaded straight into your own
 model selection, and any treatment/outcome role tags feeding calls like
 `gcm.average_causal_effect` directly.
 
+## From DAG to causal analysis with dowhy.gcm
+
+DAGshop's job stops at the exported DAG -- the analysis itself is
+`dowhy.gcm`'s (not a DAGshop dependency; `pip install dowhy` in your own
+environment). All four examples below share this setup:
+
+```python
+import networkx as nx
+import pandas as pd
+from dowhy import gcm
+
+graph = nx.read_graphml("outputs/dag_export.graphml")
+data = pd.read_csv("inputs/demo.csv")
+
+# Role tags carried over from the workshop -- read them back off the
+# graph rather than re-typing which columns were treatment/outcome.
+treatments = [n for n, role in graph.nodes(data="role") if role == "treatment"]
+outcomes = [n for n, role in graph.nodes(data="role") if role == "outcome"]
+
+causal_model = gcm.StructuralCausalModel(graph)
+gcm.auto.assign_causal_mechanisms(causal_model, data)
+gcm.fit(causal_model, data)
+```
+
+### Refuting the graph
+
+Worth running before trusting anything below -- checks whether the
+data's independence structure is actually consistent with the DAG you
+drew:
+
+```python
+from dowhy.gcm.falsify import falsify_graph
+
+result = falsify_graph(graph, data)
+print(result)
+```
+
+This only needs `graph` and `data`, not the fitted `causal_model`.
+
+### Interventions
+
+```python
+samples = gcm.interventional_samples(
+    causal_model,
+    {treatments[0]: lambda t: 1},  # do(treatment := 1)
+    num_samples_to_draw=1000,
+)
+```
+
+### Counterfactuals
+
+```python
+counterfactual_model = gcm.InvertibleStructuralCausalModel(graph)
+gcm.auto.assign_causal_mechanisms(counterfactual_model, data)
+gcm.fit(counterfactual_model, data)
+
+gcm.counterfactual_samples(
+    counterfactual_model,
+    {"age": lambda age: age + 10},
+    observed_data=data.iloc[[0]],
+)
+```
+
+One thing to know: counterfactuals need invertible mechanisms on every
+node the query passes through, which is a stronger requirement than the
+mechanisms auto-assigned above -- a binary node (this demo's
+`treatment`) can't reuse a classifier the same way. Check dowhy's docs
+on invertible models if your causal path crosses a discrete/binary
+variable.
+
+### Causal intrinsic attribution
+
+```python
+contributions = gcm.intrinsic_causal_influence(causal_model, outcomes[0])
+```
+
+Returns each ancestor's share of the outcome's own variance/uncertainty
+-- a natural next look at exactly the covariates DAGshop's own
+association tables already flagged as related.
+
 ## Development
 
 ```bash

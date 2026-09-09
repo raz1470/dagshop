@@ -5,18 +5,21 @@ anything on the DAG automatically. For every relevant ordered pair
 `(X, Y)`, fits a single-feature `Y ~ X` model using
 `HistGradientBoostingRegressor` (continuous `Y`) or
 `HistGradientBoostingClassifier` (binary `Y`), the same model family
-`dowhy.gcm`'s auto-assignment uses at its default quality setting. Ranks
-by association with designated treatment(s)/outcome(s) (`n * (t + o)`
-fits) when designated, or falls back to a full pairwise scan
-(`n * (n - 1)`) when not. When scoped, a third table covers every
-ordered pair among the remaining covariates (neither treatment nor
-outcome) -- the same scoring method as the other two tables, run over
-`_full_pairs` of just the covariate columns; unscoped mode already
-covers every pair via `full_table`, so no separate covariate table is
-built there. No threshold-based flagging: this module produces ranking
+`dowhy.gcm`'s auto-assignment uses at its default quality setting. When
+scoped, every column has exactly one role -- treatment, outcome, or
+covariate -- and each ordered pair `(X, Y)` is routed into the table
+matching `Y`'s (the target's) role: `treatment_table`, `outcome_table`,
+or `covariate_table`. Since every column falls into exactly one role,
+this is a clean three-way partition of the *same* `n * (n - 1)` pairs
+an unscoped scan would run -- scoped mode no longer saves any fitting
+work once treatments/outcomes are designated (see the session 10
+decision note below); the payoff is purely organizational, splitting
+one big association picture into three labeled tables instead of one.
+Unscoped mode skips the split entirely and returns everything in
+`full_table`. No threshold-based flagging: this module produces ranking
 table(s) and a per-pair plot cache only, per SCOPE.md's "Sorting, not
-auto-flagging" -- spotting a variable that ranks high on both the
-treatment and outcome tables is left to the PM/DS.
+auto-flagging" -- spotting a variable that ranks high on multiple
+tables is left to the PM/DS.
 
 Depends only on pandas/sklearn, not on graph.py or the UI (dagshop has no
 dowhy dependency at all -- the DAG this tool exports is loaded into the
@@ -61,14 +64,25 @@ Ryan (flagging per PREFERENCES.md):
   cycle handling: warn and continue, don't except.
 
 Decision from session 10 (asked of and confirmed by Ryan before writing
-`covariate_table`): its pairwise fits reuse the scan's existing
-`max_rows`/`test_size` subsample rather than a separate, smaller cap.
-Scoped mode exists to avoid `n * (n - 1)` cost, and a covariate table is
-structurally that same full pairwise scan restricted to the covariate
-columns -- so it can cost as much as the unscoped path once treatments/
-outcomes are a small fraction of all columns. Ryan chose consistency
-(same rows, same scoring method, one `--max-rows` knob) over adding a
-second row-cap parameter just for this table.
+`covariate_table`, revised once during the same session): the first cut
+built `covariate_table` as pairs *among* covariates only, leaving
+`treatment -> mediator`-style relationships (a designated column as
+*predictor* of a plain covariate) unscanned anywhere -- discovered when
+Ryan asked why the tool couldn't show how a treatment drives a mediator.
+Working through it, `treatment_table`/`outcome_table` already cover
+treatment<->treatment, outcome<->outcome, and treatment<->outcome
+symmetrically for free (each shows up once, from whichever table's
+target-loop reaches it) -- the only real gap was the covariate boundary.
+Closing it by routing every pair by the target's role, rather than
+special-casing the reverse direction, makes the three tables an exact
+partition of the same `n * (n - 1)` pairs an unscoped scan runs: no
+duplicate fits, and total scan cost stops depending on how many columns
+are covariates. Ryan confirmed this is what he wants -- full picture,
+with treatment(s)/outcome(s) used purely to group/label associations
+rather than to keep the scan cheap. `max_rows`/`test_size` are still
+reused as-is (no separate row cap): once every pair gets fit regardless
+of table, there's no compute-saving reason left to score any of them on
+a different sample.
 """
 
 from __future__ import annotations
@@ -165,19 +179,23 @@ class SkippedPair:
 class AssociationScan:
     """Result of `scan_associations`.
 
-    Exactly one of (`treatment_table` and/or `outcome_table`, plus
-    `covariate_table`) or `full_table` is populated, matching `scoped`:
-    SCOPE.md's "ranked association table(s)... split into 'associated
-    with treatment(s)' / 'associated with outcome(s)' shown side by side
-    when designated, otherwise a single table," plus a third table
-    (session 10) covering every ordered pair among the columns that are
-    neither a treatment nor an outcome. `covariate_table` is only ever
-    populated when `scoped` is true and at least 2 such columns remain;
-    unscoped mode leaves it empty since `full_table` already covers
-    every pair. Each populated table is sorted by score descending (ties
-    broken by predictor name, for determinism). No field here flags a
-    variable as a confounder -- that reading is left to the PM/DS, per
-    SCOPE.md's "Sorting, not auto-flagging."
+    Exactly one of (`treatment_table`, `outcome_table`, and
+    `covariate_table` together) or `full_table` is populated, matching
+    `scoped`: SCOPE.md's "ranked association table(s)... split into
+    'associated with treatment(s)' / 'associated with outcome(s)' shown
+    side by side when designated, otherwise a single table," plus a
+    third table (session 10) for every column that is neither a
+    treatment nor an outcome. Every column has exactly one role, so each
+    ordered pair `(X, Y)` lands in exactly one of the three tables,
+    chosen by `Y`'s (the target's) role -- together they partition the
+    same `n * (n - 1)` pairs `full_table` would hold unscoped, with no
+    pair fit twice. `covariate_table` is only empty when every column is
+    a designated treatment or outcome (no covariates left to be a
+    target); unscoped mode leaves all three empty since `full_table`
+    already covers every pair. Each populated table is sorted by score
+    descending (ties broken by predictor name, for determinism). No
+    field here flags a variable as a confounder -- that reading is left
+    to the PM/DS, per SCOPE.md's "Sorting, not auto-flagging."
     """
 
     scoped: bool
@@ -207,9 +225,11 @@ def scan_associations(
             any fitting starts.
         treatments: column names designated as treatment variables. If
             this and/or `outcomes` is non-empty, the scan is scoped:
-            every column vs every treatment, and every column vs every
-            outcome (`n * (t + o)` fits). Names not found in `data`'s
-            columns raise `ValueError`.
+            every column is assigned the role treatment, outcome, or
+            covariate, and every ordered pair is fit and routed into the
+            table matching its target's role (`n * (n - 1)` fits total,
+            same as unscoped -- see the module docstring). Names not
+            found in `data`'s columns raise `ValueError`.
         outcomes: column names designated as outcome variables. See
             `treatments`.
         max_rows: if `data` has more rows than this, one random
@@ -226,10 +246,10 @@ def scan_associations(
     Returns:
         An `AssociationScan`. If neither `treatments` nor `outcomes` is
         given, `full_table` holds every ordered pair `(X, Y)` for `X !=
-        Y` across all of `data`'s columns; otherwise `treatment_table`/
-        `outcome_table` hold the scoped pairs, and `covariate_table`
-        holds every ordered pair among the remaining columns (neither a
-        treatment nor an outcome), when at least 2 such columns exist.
+        Y` across all of `data`'s columns; otherwise `treatment_table`,
+        `outcome_table`, and `covariate_table` between them hold every
+        ordered pair (grouped by the target's role), and `full_table` is
+        empty.
     """
     if data.shape[1] < 2:
         raise ValueError("data must have at least 2 columns to scan pairwise associations")
@@ -290,10 +310,16 @@ def scan_associations(
             run_pairs(_scoped_pairs(columns, treatment_names)) if treatment_names else []
         )
         outcome_table = run_pairs(_scoped_pairs(columns, outcome_names)) if outcome_names else []
+        # Every remaining column (neither a designated treatment nor
+        # outcome) gets the same treatment: every *other* column vs each
+        # covariate-as-target. Together with the two tables above, this
+        # partitions the full n * (n - 1) pairs by the target's role --
+        # no pair fit twice, no pair left unscanned (session 10, revised:
+        # see the module docstring's decision note).
         excluded = set(treatment_names) | set(outcome_names)
         covariate_columns = [c for c in columns if c not in excluded]
         covariate_table = (
-            run_pairs(_full_pairs(covariate_columns)) if len(covariate_columns) >= 2 else []
+            run_pairs(_scoped_pairs(columns, covariate_columns)) if covariate_columns else []
         )
         full_table: list[PairResult] = []
     else:

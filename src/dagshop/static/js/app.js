@@ -136,20 +136,41 @@ function buildTable(title, rows) {
   return table;
 }
 
+// A table's rows can target columns of different kinds (e.g. covariate_table's
+// targets are every covariate, continuous and binary alike), which means
+// score_name -- and therefore the metric's scale -- isn't the same across every
+// row: ROC AUC's floor sits around 0.5 ("no skill") while R2's floor can run
+// much lower or negative, so ranking both together by raw score would always
+// favor the AUC rows regardless of which relationship is actually stronger.
+// Rather than invent a normalized cross-metric score (a modeling judgment call
+// SCOPE.md deliberately avoids -- "sorting, not auto-flagging"), split into one
+// table per metric whenever a group mixes them; each list is already sorted by
+// score, so a stable filter by score_name keeps that order intact.
+function renderTableGroup(container, title, rows) {
+  if (rows.length === 0) return;
+  const scoreNames = [...new Set(rows.map((row) => row.score_name))];
+  if (scoreNames.length <= 1) {
+    container.appendChild(buildTable(title, rows));
+    return;
+  }
+  for (const scoreName of scoreNames) {
+    container.appendChild(
+      buildTable(
+        `${title} — ${scoreName}`,
+        rows.filter((row) => row.score_name === scoreName),
+      ),
+    );
+  }
+}
+
 function renderTables(tables) {
   tablesContainer.innerHTML = "";
   if (tables.scoped) {
-    if (tables.treatment_table.length > 0) {
-      tablesContainer.appendChild(buildTable("Associated with treatment(s)", tables.treatment_table));
-    }
-    if (tables.outcome_table.length > 0) {
-      tablesContainer.appendChild(buildTable("Associated with outcome(s)", tables.outcome_table));
-    }
-    if (tables.covariate_table.length > 0) {
-      tablesContainer.appendChild(buildTable("Between covariates", tables.covariate_table));
-    }
+    renderTableGroup(tablesContainer, "Associated with treatment(s)", tables.treatment_table);
+    renderTableGroup(tablesContainer, "Associated with outcome(s)", tables.outcome_table);
+    renderTableGroup(tablesContainer, "Associated with covariate(s)", tables.covariate_table);
   } else {
-    tablesContainer.appendChild(buildTable("Pairwise associations", tables.full_table));
+    renderTableGroup(tablesContainer, "Pairwise associations", tables.full_table);
   }
 
   skippedContainer.innerHTML = "";
