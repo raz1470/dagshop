@@ -435,17 +435,25 @@ function cyStyle() {
       selector: 'edge[sign = "-"]',
       style: { "line-color": "#c23b3b", "target-arrow-color": "#c23b3b" },
     },
+    // cytoscape-edgehandles 4.0.1's actual classes (see the "Bug fix,
+    // session 8" comment in initCytoscape for how these get applied --
+    // there is no separate "handle" node in this vendored version, so
+    // there used to be a dead ".eh-handle" rule here that never
+    // matched anything; removed).
     {
-      selector: ".eh-handle",
-      style: {
-        "background-color": "#2e6bd6",
-        width: 10,
-        height: 10,
-        opacity: 0.9,
-        "border-width": 0,
-      },
+      selector: ".eh-source, .eh-target",
+      style: { "border-width": 3, "border-color": "#2e6bd6" },
     },
-    { selector: ".eh-ghost-edge", style: { "line-style": "dashed" } },
+    { selector: ".eh-hover", style: { "border-width": 3, "border-color": "#1f8a4c" } },
+    {
+      selector: ".eh-ghost-node",
+      style: { "background-color": "#2e6bd6", opacity: 0.6 },
+    },
+    { selector: ".eh-ghost-edge", style: { "line-style": "dashed", opacity: 0.8 } },
+    {
+      selector: ".eh-ghost-edge.eh-preview-active",
+      style: { "line-color": "#1f8a4c", "target-arrow-color": "#1f8a4c" },
+    },
   ];
 }
 
@@ -457,6 +465,14 @@ function initCytoscape(graph) {
     layout: { name: "preset" }, // positions come from server.py's initial layout
     minZoom: 0.2,
     maxZoom: 3,
+    // Cytoscape core's own box-selection gesture is bound to Shift+drag
+    // by default (regardless of whether the drag starts on a node or
+    // the background), which raced against the Shift+drag-to-connect
+    // gesture added below and won: Ryan saw a selection box instead of
+    // an edge (session 8, second bug in the same interaction). Nothing
+    // in this app uses multi-select, so disabling it outright is a
+    // clean fix rather than trying to out-race it.
+    boxSelectionEnabled: false,
   });
 
   // Treatment/outcome nodes are "pinned" per SCOPE.md step 2: locked by
@@ -474,6 +490,60 @@ function initCytoscape(graph) {
     edgeParams: () => ({}),
     hoverDelay: 150,
     snap: false,
+  });
+
+  // Bug fix, session 8 (Ryan: "it wont let me draw arrows"). The
+  // vendored cytoscape-edgehandles 4.0.1 has no separate "handle" dot
+  // to drag (grepped the whole vendored file: the string "eh-handle"
+  // -- our own now-removed dead CSS selector -- appears nowhere in the
+  // library itself). Its own internal `tapstart` listener only calls
+  // `start()` when `drawMode` is true:
+  //
+  //     this.addListener(cy, 'tapstart', 'node', function (e) {
+  //       if (_this.drawMode) { _this.start(node); }
+  //     });
+  //
+  // `drawMode` defaults to false and nothing here ever called
+  // `eh.enableDrawMode()`, so plain click-drag on a node could never
+  // start an edge -- it just repositioned the node (or did nothing, if
+  // locked).
+  //
+  // Revised, session 9. The first fix (session 8) called `eh.start()`
+  // ourselves from a `cy.on("tapstart", "node", ...)` listener whenever
+  // Shift was already held at mousedown, rather than going through
+  // `enableDrawMode()`. That shipped untested and mostly worked for
+  // Ryan by hand, but failed reliably in CI's headless run: calling
+  // `eh.start()` from inside `tapstart` is too late to matter, because
+  // `enableDrawMode()` (see `toggleDrawMode` above) also runs
+  // `cy.autoungrabify(true)` -- specifically so the source node can't
+  // *also* be natively grabbed and dragged by cytoscape core while
+  // edgehandles is tracking the gesture. Skip that and cytoscape core
+  // unconditionally skips emitting `tapdragover`/`tapdragout` (the
+  // events edgehandles' `preview()` relies on to ever notice a target
+  // node) for as long as any node reports `grabbed() === true`
+  // (confirmed by reading cytoscape core's own minified drag handling:
+  // `ne&&ne.grabbed()||O==re||(...emit tapdragover...)`). Ryan's manual
+  // testing never hit this -- his drags apparently always involved a
+  // locked (pinned treatment/outcome) node, which can't be natively
+  // grabbed -- but the Playwright test picked two ordinary grabbable
+  // nodes and hit it on every run.
+  //
+  // Fixed by toggling the library's own `drawMode` on Shift
+  // keydown/keyup instead of calling `eh.start()` ourselves: this runs
+  // `cy.autoungrabify(true)` *before* the user ever mouses down on the
+  // source node, so it's never natively grabbed in the first place,
+  // and the library's built-in `tapstart` listener (quoted above)
+  // handles starting the gesture. Unmodified drag still moves a node
+  // (SCOPE.md step 2's "drag to position"); Shift+drag draws an edge
+  // (SCOPE.md step 2's "click-drag to create a directed edge") -- both
+  // now go through the code path the library actually tests and
+  // documents, rather than one that only worked by the accident of how
+  // it happened to be exercised.
+  document.addEventListener("keydown", (evt) => {
+    if (evt.key === "Shift" && !eh.drawMode) eh.enableDrawMode();
+  });
+  document.addEventListener("keyup", (evt) => {
+    if (evt.key === "Shift" && eh.drawMode) eh.disableDrawMode();
   });
 
   cy.on("ehcomplete", (_evt, sourceNode, targetNode, addedEdge) => {
@@ -603,12 +673,16 @@ async function init() {
     ]);
     renderDatasetSummary(health);
     renderTables(tables);
-    initCytoscape(graph);
+    const eh = initCytoscape(graph);
     wireTopbar();
     // Exposed for the Playwright smoke test (test_frontend_smoke.py) and
     // for manual debugging in the browser console -- not used by app.js
     // itself, which keeps `cy` as a plain module-level variable above.
-    window.__dagshop = { cy };
+    // `eh` (the edgehandles instance) is included so tests can inspect
+    // gesture state (`eh.drawMode`, `eh.active`, `eh.targetNode`)
+    // directly if a Shift+drag test ever needs to diagnose why an edge
+    // did or didn't get created, rather than guessing blind.
+    window.__dagshop = { cy, eh };
   } catch (err) {
     showBanner(`Failed to load workshop session: ${err.message}`);
   }

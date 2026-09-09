@@ -14,6 +14,17 @@ suite, just confirmation that the page actually renders once
 `static/`'s vendored JS is real -- the ranking table has rows, the
 Cytoscape canvas has drawn nodes with the right treatment/outcome roles,
 and nothing throws a console error on load.
+
+`test_shift_drag_creates_edge` (added session 8, after Ryan reported
+"it wont let me draw arrows") is the reason this file's original scope
+statement above was a real gap, not just a formality: no test here ever
+exercised edge creation, so the drawMode bug fixed in `app.js` this
+session shipped straight through a green frontend job. This is still
+untested from the bridge Claude runs on -- its network allowlist blocks
+Playwright's Chromium download (see NOTES.md sessions 5+) -- so it has
+only been validated by static reading of the vendored
+cytoscape-edgehandles source, not by actually running it. CI is where
+this gets a real signal.
 """
 
 from __future__ import annotations
@@ -105,3 +116,131 @@ def test_workshop_page_renders(live_server, page):
     assert "outcome" in node_roles
 
     assert console_errors == [], f"console errors on load: {console_errors}"
+
+
+def test_shift_drag_creates_edge(live_server, page):
+    """Session 8's fix: Shift+drag from one node to another should draw
+    a real, signed edge (via the sign modal), matching the on-page hint
+    text. Plain drag (no Shift) must still just reposition a node and
+    create nothing -- the whole point of the modifier-key gesture is
+    that both interactions coexist without a persistent mode toggle.
+    """
+    # Imported here, not at module level: this module is collected (and
+    # so imported) by the `test`/`lint` CI jobs too, which deliberately
+    # install only the lean `test` dependency group without playwright
+    # (see pyproject.toml's [dependency-groups] comment) -- a top-level
+    # import broke that on the first attempt at this diagnostic (session
+    # 9: "ModuleNotFoundError: No module named 'playwright'" in the
+    # `test` job, which never even runs this function's body since the
+    # test is marker-deselected there).
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    console_errors: list[str] = []
+    page.on("console", lambda msg: msg.type == "error" and console_errors.append(msg.text))
+    page.on("pageerror", lambda exc: console_errors.append(str(exc)))
+
+    page.goto(live_server)
+    page.wait_for_selector("#cy canvas")
+
+    node_ids = page.evaluate("() => window.__dagshop.cy.nodes().map((n) => n.id())")
+    assert len(node_ids) >= 2
+    source_id, target_id = node_ids[0], node_ids[1]
+
+    def node_center(node_id):
+        return page.evaluate(
+            "(id) => { "
+            "const n = window.__dagshop.cy.getElementById(id); "
+            "const p = n.renderedPosition(); "
+            "const rect = document.getElementById('cy').getBoundingClientRect(); "
+            "return { x: rect.left + p.x, y: rect.top + p.y }; "
+            "}",
+            node_id,
+        )
+
+    source = node_center(source_id)
+    target = node_center(target_id)
+
+    # Plain drag (no Shift): repositions the source node, creates no edge.
+    page.mouse.move(source["x"], source["y"])
+    page.mouse.down()
+    page.mouse.move(source["x"] + 40, source["y"] + 40, steps=5)
+    page.mouse.up()
+    edge_count_after_plain_drag = page.evaluate("() => window.__dagshop.cy.edges().length")
+    assert edge_count_after_plain_drag == 0
+
+    # Re-fetch source's position: the plain drag above just moved it.
+    source = node_center(source_id)
+
+    # Record edgehandles' own lifecycle events (all emitted on `cy` as
+    # "eh" + <name> -- see cytoscape-edgehandles.js's `emit()`) so a
+    # failure below can say exactly how far the gesture got, instead of
+    # a bare selector timeout. See app.js's `initCytoscape` for why this
+    # matters: an earlier version of this test failed at the
+    # wait_for_selector below on every CI run because the source node
+    # was still natively grabbable when the drag started, which
+    # silently prevented edgehandles from ever noticing the target node
+    # (cytoscape core skips tapdragover/tapdragout entirely while any
+    # node reports grabbed() === true). app.js now arms `drawMode`
+    # (autoungrabify) on Shift keydown, before mousedown, which avoids
+    # that -- this log is kept so a regression shows up as a clear
+    # diagnostic rather than another blind CI round-trip.
+    page.evaluate(
+        "() => { "
+        "window.__ehLog = []; "
+        "for (const name of ['ehstart', 'ehpreviewon', 'ehcancel', 'ehcomplete', 'ehstop']) { "
+        "  window.__dagshop.cy.on(name, () => window.__ehLog.push(name)); "
+        "} "
+        "}"
+    )
+
+    # Shift+drag: should start an edgehandles gesture ending in the sign
+    # modal (server.py's edges always need a user-asserted sign, no
+    # default -- see graph.py's add_edge docstring). Shift goes down
+    # *before* mousedown on the source node deliberately -- see the
+    # app.js comment above `document.addEventListener("keydown", ...)`
+    # for why that ordering is now load-bearing, not just convenient.
+    page.keyboard.down("Shift")
+    page.mouse.move(source["x"], source["y"])
+    page.mouse.down()
+    page.mouse.move(target["x"], target["y"], steps=10)
+    # edgehandles' `hoverDelay: 150` (app.js) defers actually setting
+    # `targetNode` until 150ms after the pointer arrives over it -- see
+    # the vendored cytoscape-edgehandles.js `preview()`, which schedules
+    # `applyPreview` via `setTimeout(..., options.hoverDelay)` rather
+    # than setting it synchronously. Wait comfortably past that before
+    # mouseup.
+    page.wait_for_timeout(250)
+    page.mouse.up()
+    page.keyboard.up("Shift")
+
+    try:
+        page.wait_for_selector("#sign-modal:not(.hidden)", timeout=5000)
+    except PlaywrightTimeoutError:
+        eh_log = page.evaluate("() => window.__ehLog")
+        eh_state = page.evaluate(
+            "() => ({ "
+            "drawMode: window.__dagshop.eh.drawMode, "
+            "active: window.__dagshop.eh.active, "
+            "targetNode: window.__dagshop.eh.targetNode && window.__dagshop.eh.targetNode.id ? "
+            "window.__dagshop.eh.targetNode.id() : null "
+            "})"
+        )
+        raise AssertionError(
+            f"sign modal never opened after Shift+drag from {source_id!r} to "
+            f"{target_id!r}. eh lifecycle events seen: {eh_log}. eh state at "
+            f"failure: {eh_state}. console errors: {console_errors}"
+        ) from None
+    page.click("#sign-plus")
+
+    # createEdge() (app.js) awaits a POST to /api/edges before calling
+    # cy.add(...) -- give that round-trip a chance to land instead of
+    # reading cy.edges() the instant the click handler returns.
+    page.wait_for_function("() => window.__dagshop.cy.edges().length > 0")
+
+    edges = page.evaluate(
+        "() => window.__dagshop.cy.edges().map((e) => "
+        "({source: e.data('source'), target: e.data('target'), sign: e.data('sign')}))"
+    )
+    assert {"source": source_id, "target": target_id, "sign": "+"} in edges
+
+    assert console_errors == [], f"console errors during drag: {console_errors}"
