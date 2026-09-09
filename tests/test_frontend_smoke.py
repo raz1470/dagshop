@@ -37,6 +37,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import uvicorn
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from dagshop.server import create_app
 
@@ -161,9 +162,34 @@ def test_shift_drag_creates_edge(live_server, page):
     # Re-fetch source's position: the plain drag above just moved it.
     source = node_center(source_id)
 
+    # Record edgehandles' own lifecycle events (all emitted on `cy` as
+    # "eh" + <name> -- see cytoscape-edgehandles.js's `emit()`) so a
+    # failure below can say exactly how far the gesture got, instead of
+    # a bare selector timeout. See app.js's `initCytoscape` for why this
+    # matters: an earlier version of this test failed at the
+    # wait_for_selector below on every CI run because the source node
+    # was still natively grabbable when the drag started, which
+    # silently prevented edgehandles from ever noticing the target node
+    # (cytoscape core skips tapdragover/tapdragout entirely while any
+    # node reports grabbed() === true). app.js now arms `drawMode`
+    # (autoungrabify) on Shift keydown, before mousedown, which avoids
+    # that -- this log is kept so a regression shows up as a clear
+    # diagnostic rather than another blind CI round-trip.
+    page.evaluate(
+        "() => { "
+        "window.__ehLog = []; "
+        "for (const name of ['ehstart', 'ehpreviewon', 'ehcancel', 'ehcomplete', 'ehstop']) { "
+        "  window.__dagshop.cy.on(name, () => window.__ehLog.push(name)); "
+        "} "
+        "}"
+    )
+
     # Shift+drag: should start an edgehandles gesture ending in the sign
     # modal (server.py's edges always need a user-asserted sign, no
-    # default -- see graph.py's add_edge docstring).
+    # default -- see graph.py's add_edge docstring). Shift goes down
+    # *before* mousedown on the source node deliberately -- see the
+    # app.js comment above `document.addEventListener("keydown", ...)`
+    # for why that ordering is now load-bearing, not just convenient.
     page.keyboard.down("Shift")
     page.mouse.move(source["x"], source["y"])
     page.mouse.down()
@@ -172,16 +198,29 @@ def test_shift_drag_creates_edge(live_server, page):
     # `targetNode` until 150ms after the pointer arrives over it -- see
     # the vendored cytoscape-edgehandles.js `preview()`, which schedules
     # `applyPreview` via `setTimeout(..., options.hoverDelay)` rather
-    # than setting it synchronously. Releasing the mouse before that
-    # timer fires means `stop()` sees an empty `targetNode` and never
-    # emits `ehcomplete`, so the sign modal never opens -- a real mouse
-    # dwells here far longer than that without anyone noticing. Wait
-    # comfortably past the delay before mouseup.
+    # than setting it synchronously. Wait comfortably past that before
+    # mouseup.
     page.wait_for_timeout(250)
     page.mouse.up()
     page.keyboard.up("Shift")
 
-    page.wait_for_selector("#sign-modal:not(.hidden)")
+    try:
+        page.wait_for_selector("#sign-modal:not(.hidden)", timeout=5000)
+    except PlaywrightTimeoutError:
+        eh_log = page.evaluate("() => window.__ehLog")
+        eh_state = page.evaluate(
+            "() => ({ "
+            "drawMode: window.__dagshop.eh.drawMode, "
+            "active: window.__dagshop.eh.active, "
+            "targetNode: window.__dagshop.eh.targetNode && window.__dagshop.eh.targetNode.id ? "
+            "window.__dagshop.eh.targetNode.id() : null "
+            "})"
+        )
+        raise AssertionError(
+            f"sign modal never opened after Shift+drag from {source_id!r} to "
+            f"{target_id!r}. eh lifecycle events seen: {eh_log}. eh state at "
+            f"failure: {eh_state}. console errors: {console_errors}"
+        ) from None
     page.click("#sign-plus")
 
     edges = page.evaluate(
