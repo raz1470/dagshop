@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --no-default-groups --group test --python ${{ matrix.python-version }}
+
+      - name: Run tests
+        run: uv run --no-default-groups --group test --python ${{ matrix.python-version }} pytest
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --no-default-groups --group test
+
+      - name: Ruff format check
+        run: uv run --no-default-groups --group test ruff format --check .
+
+      - name: Ruff lint
+        run: uv run --no-default-groups --group test ruff check .
+
+  # A third job (frontend/chart legibility check, mirroring
+  # how_wrong_is_your_mmm's headless-browser check) belongs here once
+  # static/ has real Cytoscape.js/Plotly.js UI code. Not added yet: see
+  # SCOPE.md build order step 3.
