@@ -114,6 +114,7 @@ def create_app(
     test_size: float = 0.2,
     random_state: int = 0,
     plot_grid_size: int = 50,
+    initial_session: str | Path | None = None,
 ) -> FastAPI:
     """Build the DAGshop FastAPI app for one workshop session.
 
@@ -125,9 +126,18 @@ def create_app(
     (next slice) is expected to call this, then hand the result straight
     to uvicorn.
 
+    `initial_session` (added session 6, for `cli.py`'s `--session` flag):
+    when given, the freshly built DAG from `treatments`/`outcomes` is
+    discarded in favor of `DAGModel.load_session(initial_session)`. The
+    association scan still runs against `data_path` regardless -- per
+    the session-5 decision that a loaded session never touches the scan,
+    since the scan is tied to whichever CSV the server was launched
+    with, not to whichever session file gets resumed.
+
     Raises whatever `pd.read_csv`, `scan_associations`, or `DAGModel`
     raise on bad input (e.g. `associate.ColumnTypeError` for a
-    non-numeric column) -- this is a startup-time failure, not a request
+    non-numeric column), or `FileNotFoundError` if `initial_session` is
+    given and doesn't exist -- all startup-time failures, not requests
     to handle gracefully in a route.
     """
     data_path = Path(data_path)
@@ -156,6 +166,8 @@ def create_app(
     dag = _build_initial_dag(
         list(data.columns), treatments=treatments, outcomes=outcomes, random_state=random_state
     )
+    if initial_session is not None:
+        dag = DAGModel.load_session(initial_session)
 
     app = FastAPI(title="DAGshop")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

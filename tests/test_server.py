@@ -21,6 +21,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
+from dagshop.graph import DAGModel
 from dagshop.server import create_app
 
 RANDOM_STATE = 0
@@ -108,6 +109,40 @@ def test_scoped_app_pins_treatment_and_outcome_positions(scoped_client):
 def test_overlapping_treatment_and_outcome_rejected(scoped_csv):
     with pytest.raises(ValueError, match="both a treatment and an outcome"):
         create_app(scoped_csv, treatments=["outcome"], outcomes=["outcome"])
+
+
+def test_initial_session_resume_overrides_fresh_layout(unscoped_csv, tmp_path):
+    # Build a session with a node moved off its fresh-layout position and
+    # an edge added, save it, then confirm create_app(initial_session=...)
+    # serves that saved state rather than a freshly scattered layout.
+    # Session-5 decision: the association scan still runs against
+    # `unscoped_csv` regardless (checked via /api/tables below), since a
+    # loaded session never touches the scan.
+    saved = DAGModel()
+    for name in ("a", "b", "c"):
+        saved.add_node(name)
+    saved.set_position("a", x=999.0, y=888.0)
+    saved.add_edge("a", "b", sign="+")
+    session_path = tmp_path / "session.json"
+    saved.save_session(session_path)
+
+    app = create_app(unscoped_csv, random_state=RANDOM_STATE, initial_session=session_path)
+    client = TestClient(app)
+
+    graph = client.get("/api/graph").json()
+    by_name = {n["name"]: n for n in graph["nodes"]}
+    assert by_name["a"]["x"] == pytest.approx(999.0)
+    assert by_name["a"]["y"] == pytest.approx(888.0)
+    assert graph["edges"] == [{"source": "a", "target": "b", "sign": "+"}]
+
+    # scan still ran against unscoped_csv, untouched by the loaded session
+    assert client.get("/api/tables").json()["scoped"] is False
+
+
+def test_initial_session_missing_file_raises(unscoped_csv, tmp_path):
+    missing = tmp_path / "nope.json"
+    with pytest.raises(FileNotFoundError):
+        create_app(unscoped_csv, initial_session=missing)
 
 
 def test_multiple_treatments_and_outcomes_are_evenly_spaced(tmp_path):
