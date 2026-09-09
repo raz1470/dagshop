@@ -435,17 +435,25 @@ function cyStyle() {
       selector: 'edge[sign = "-"]',
       style: { "line-color": "#c23b3b", "target-arrow-color": "#c23b3b" },
     },
+    // cytoscape-edgehandles 4.0.1's actual classes (see the "Bug fix,
+    // session 8" comment in initCytoscape for how these get applied --
+    // there is no separate "handle" node in this vendored version, so
+    // there used to be a dead ".eh-handle" rule here that never
+    // matched anything; removed).
     {
-      selector: ".eh-handle",
-      style: {
-        "background-color": "#2e6bd6",
-        width: 10,
-        height: 10,
-        opacity: 0.9,
-        "border-width": 0,
-      },
+      selector: ".eh-source, .eh-target",
+      style: { "border-width": 3, "border-color": "#2e6bd6" },
     },
-    { selector: ".eh-ghost-edge", style: { "line-style": "dashed" } },
+    { selector: ".eh-hover", style: { "border-width": 3, "border-color": "#1f8a4c" } },
+    {
+      selector: ".eh-ghost-node",
+      style: { "background-color": "#2e6bd6", opacity: 0.6 },
+    },
+    { selector: ".eh-ghost-edge", style: { "line-style": "dashed", opacity: 0.8 } },
+    {
+      selector: ".eh-ghost-edge.eh-preview-active",
+      style: { "line-color": "#1f8a4c", "target-arrow-color": "#1f8a4c" },
+    },
   ];
 }
 
@@ -474,6 +482,36 @@ function initCytoscape(graph) {
     edgeParams: () => ({}),
     hoverDelay: 150,
     snap: false,
+  });
+
+  // Bug fix, session 8 (Ryan: "it wont let me draw arrows"). The
+  // vendored cytoscape-edgehandles 4.0.1 has no separate "handle" dot
+  // to drag (grepped the whole vendored file: the string "eh-handle"
+  // -- our own now-removed dead CSS selector -- appears nowhere in the
+  // library itself). Its own internal `tapstart` listener only calls
+  // `start()` when `drawMode` is true:
+  //
+  //     this.addListener(cy, 'tapstart', 'node', function (e) {
+  //       if (_this.drawMode) { _this.start(node); }
+  //     });
+  //
+  // `drawMode` defaults to false and nothing here ever called
+  // `eh.enableDrawMode()`, so plain click-drag on a node could never
+  // start an edge -- it just repositioned the node (or did nothing, if
+  // locked). Rather than a persistent global draw-mode toggle (which
+  // would disable node repositioning entirely while active, since
+  // draw-mode intercepts every node drag), this triggers `eh.start()`
+  // ourselves only when Shift is held at drag-start: unmodified drag
+  // still moves a node (SCOPE.md step 2's "drag to position"), Shift
+  // drag draws an edge (SCOPE.md step 2's "click-drag to create a
+  // directed edge"). This also matches SCOPE.md's own stated
+  // inspiration (causaLens' Dara/CausalGraphViewer: "distinct editor
+  // modes for different stages of the workflow") more literally than
+  // the original always-on click-drag assumption did.
+  cy.on("tapstart", "node", (evt) => {
+    if (evt.originalEvent && evt.originalEvent.shiftKey) {
+      eh.start(evt.target);
+    }
   });
 
   cy.on("ehcomplete", (_evt, sourceNode, targetNode, addedEdge) => {
