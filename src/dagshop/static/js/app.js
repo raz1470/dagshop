@@ -465,6 +465,14 @@ function initCytoscape(graph) {
     layout: { name: "preset" }, // positions come from server.py's initial layout
     minZoom: 0.2,
     maxZoom: 3,
+    // Cytoscape core's own box-selection gesture is bound to Shift+drag
+    // by default (regardless of whether the drag starts on a node or
+    // the background), which raced against the Shift+drag-to-connect
+    // gesture added below and won: Ryan saw a selection box instead of
+    // an edge (session 8, second bug in the same interaction). Nothing
+    // in this app uses multi-select, so disabling it outright is a
+    // clean fix rather than trying to out-race it.
+    boxSelectionEnabled: false,
   });
 
   // Treatment/outcome nodes are "pinned" per SCOPE.md step 2: locked by
