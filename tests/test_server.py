@@ -202,10 +202,18 @@ def test_tables_scoped_splits_treatment_and_outcome(scoped_client):
     assert body["full_table"] == []
     assert {row["target"] for row in body["treatment_table"]} == {"treated"}
     assert {row["target"] for row in body["outcome_table"]} == {"outcome"}
-    # covariates = {age, prior_engagement}: every ordered pair, 2 * 1 = 2.
+    # covariates = {age, prior_engagement}: every *other* column (age,
+    # prior_engagement, treated, outcome) vs each covariate-as-target,
+    # same shape as treatment_table/outcome_table -- 2 targets * 3
+    # predictors each = 6.
+    assert {row["target"] for row in body["covariate_table"]} == {"age", "prior_engagement"}
     assert {(row["predictor"], row["target"]) for row in body["covariate_table"]} == {
-        ("age", "prior_engagement"),
         ("prior_engagement", "age"),
+        ("treated", "age"),
+        ("outcome", "age"),
+        ("age", "prior_engagement"),
+        ("treated", "prior_engagement"),
+        ("outcome", "prior_engagement"),
     }
 
 
