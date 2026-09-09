@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DAGshop</title>
+    <link rel="stylesheet" href="/static/css/styles.css" />
+  </head>
+  <body>
+    <header id="topbar">
+      <h1>DAGshop</h1>
+      <div id="dataset-summary"></div>
+      <div id="topbar-actions">
+        <button id="btn-validate" type="button">Validate</button>
+        <button id="btn-export-json" type="button">Export JSON</button>
+        <button id="btn-export-graphml" type="button">Export GraphML</button>
+        <button id="btn-save-session" type="button">Save session</button>
+        <button id="btn-load-session" type="button">Load session</button>
+      </div>
+    </header>
+
+    <div id="banner" class="hidden" role="status"></div>
+
+    <main id="layout">
+      <aside id="left-panel">
+        <div class="legend">
+          <span><span class="legend-swatch legend-treatment"></span>treatment</span>
+          <span><span class="legend-swatch legend-outcome"></span>outcome</span>
+          <span><span class="legend-swatch legend-other"></span>other</span>
+        </div>
+        <div id="tables-container"></div>
+        <div id="skipped-container"></div>
+      </aside>
+
+      <section id="canvas-wrap">
+        <div id="cy"></div>
+        <p id="canvas-hint">
+          Drag from a node's edge to another node to connect them. Right-click a node or edge for
+          more options.
+        </p>
+      </section>
+    </main>
+
+    <!-- Plot modal: pairwise scatter + prediction curve from associate.py's plot cache -->
+    <div id="plot-modal" class="modal hidden">
+      <div class="modal-content">
+        <button class="modal-close" type="button" data-close="plot-modal">&times;</button>
+        <h2 id="plot-modal-title"></h2>
+        <div id="plot-modal-body"></div>
+      </div>
+    </div>
+
+    <!-- Sign modal: every edge requires a user-asserted +/- sign, no default -->
+    <div id="sign-modal" class="modal hidden">
+      <div class="modal-content modal-content-small">
+        <h2 id="sign-modal-title">Sign this edge</h2>
+        <p id="sign-modal-subtitle"></p>
+        <div class="sign-choice">
+          <button id="sign-plus" type="button" class="sign-btn sign-plus">+</button>
+          <button id="sign-minus" type="button" class="sign-btn sign-minus">&minus;</button>
+        </div>
+        <button id="sign-cancel" type="button" class="link-btn">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Path prompt modal: used for export/save/load, which take a filesystem path -->
+    <div id="path-modal" class="modal hidden">
+      <div class="modal-content modal-content-small">
+        <h2 id="path-modal-title"></h2>
+        <input id="path-modal-input" type="text" autocomplete="off" spellcheck="false" />
+        <div class="path-modal-actions">
+          <button id="path-modal-confirm" type="button">Confirm</button>
+          <button id="path-modal-cancel" type="button" class="link-btn">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Vendored, no CDN: see static/vendor/VENDOR.md -->
+    <script src="/static/vendor/cytoscape/cytoscape.min.js"></script>
+    <script src="/static/js/compat-shim.js"></script>
+    <script src="/static/vendor/cytoscape-edgehandles/cytoscape-edgehandles.js"></script>
+    <script src="/static/vendor/plotly/plotly-basic.min.js"></script>
+    <script src="/static/js/app.js"></script>
+  </body>
+</html>

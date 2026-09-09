@@ -1,0 +1,323 @@
+/* DAGshop workshop UI. Rough first pass per NOTES.md session 5: functional,
+   not polished. Light theme only. */
+
+:root {
+  --color-bg: #f7f7f8;
+  --color-panel: #ffffff;
+  --color-border: #d9d9de;
+  --color-text: #1c1c22;
+  --color-muted: #6b6b76;
+  --color-treatment: #2e6bd6;
+  --color-outcome: #d6642e;
+  --color-node: #8a8a94;
+  --color-plus: #1f8a4c;
+  --color-minus: #c23b3b;
+  --color-warning-bg: #fff3cd;
+  --color-warning-border: #e0b93b;
+  --color-warning-text: #5c4a10;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--color-text);
+  background: var(--color-bg);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--color-panel);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+#topbar h1 {
+  font-size: 16px;
+  margin: 0;
+}
+
+#dataset-summary {
+  color: var(--color-muted);
+  font-size: 13px;
+  flex: 1;
+}
+
+#topbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+#topbar-actions button,
+.modal-content button:not(.link-btn) {
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-panel);
+  border-radius: 4px;
+}
+
+#topbar-actions button:hover,
+.modal-content button:not(.link-btn):hover {
+  background: #f0f0f3;
+}
+
+.link-btn {
+  border: none;
+  background: none;
+  color: var(--color-muted);
+  text-decoration: underline;
+  padding: 6px 0;
+}
+
+#banner {
+  padding: 8px 16px;
+  background: var(--color-warning-bg);
+  border-bottom: 1px solid var(--color-warning-border);
+  color: var(--color-warning-text);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+#banner.hidden {
+  display: none;
+}
+
+#layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+#left-panel {
+  width: 380px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-panel);
+  padding: 12px;
+}
+
+#canvas-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+#cy {
+  flex: 1;
+  background: #fbfbfc;
+}
+
+#canvas-hint {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--color-muted);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-panel);
+}
+
+/* -- ranking tables ---------------------------------------------------- */
+
+.rank-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.rank-table caption {
+  text-align: left;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.rank-table th,
+.rank-table td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.rank-table tbody tr {
+  cursor: pointer;
+}
+
+.rank-table tbody tr:hover {
+  background: #eef2fb;
+}
+
+.rank-table .score-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+#skipped-container {
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+#skipped-container summary {
+  cursor: pointer;
+}
+
+/* -- cytoscape node/edge colors (see js/app.js style spec) -------------- */
+
+.legend {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  margin-bottom: 10px;
+  color: var(--color-muted);
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+
+.legend-treatment {
+  background: var(--color-treatment);
+}
+
+.legend-outcome {
+  background: var(--color-outcome);
+}
+
+.legend-other {
+  background: var(--color-node);
+}
+
+/* -- modals -------------------------------------------------------------- */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal.hidden {
+  display: none;
+}
+
+.modal-content {
+  background: var(--color-panel);
+  border-radius: 6px;
+  padding: 20px;
+  min-width: 320px;
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow: auto;
+  position: relative;
+}
+
+.modal-content-small {
+  min-width: 260px;
+}
+
+.modal-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  border: none;
+  background: none;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--color-muted);
+}
+
+#plot-modal-body {
+  width: 640px;
+  max-width: 100%;
+}
+
+.sign-choice {
+  display: flex;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.sign-btn {
+  flex: 1;
+  font-size: 24px;
+  font-weight: 700;
+  padding: 14px 0;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-panel);
+}
+
+.sign-plus {
+  color: var(--color-plus);
+}
+
+.sign-minus {
+  color: var(--color-minus);
+}
+
+.sign-btn:hover {
+  background: #f0f0f3;
+}
+
+#path-modal-input {
+  width: 100%;
+  padding: 6px 8px;
+  margin: 10px 0;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font: inherit;
+}
+
+.path-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* -- canvas context menu -------------------------------------------------- */
+
+.cy-context-menu {
+  position: fixed;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 200;
+  min-width: 140px;
+}
+
+.cy-context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+}
+
+.cy-context-menu button:hover {
+  background: #f0f0f3;
+}

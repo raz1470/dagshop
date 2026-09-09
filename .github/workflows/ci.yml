@@ -46,7 +46,27 @@ jobs:
       - name: Ruff lint
         run: uv run --no-default-groups --group test ruff check .
 
-  # A third job (frontend/chart legibility check, mirroring
-  # how_wrong_is_your_mmm's headless-browser check) belongs here once
-  # static/ has real Cytoscape.js/Plotly.js UI code. Not added yet: see
-  # SCOPE.md build order step 3.
+  # Headless-browser smoke test for static/'s Cytoscape/Plotly UI, mirrors
+  # how_wrong_is_your_mmm's chart-legibility check (PREFERENCES.md). Kept
+  # as its own job/group (see pyproject.toml's `frontend` dependency group)
+  # so the test/lint jobs above don't pay for a Chromium download. The
+  # test itself is marker "frontend", skipped by pytest's default addopts
+  # everywhere except this explicit `-m frontend` invocation.
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --no-default-groups --group frontend
+
+      - name: Install Chromium
+        run: uv run --no-default-groups --group frontend playwright install --with-deps chromium
+
+      - name: Run frontend smoke test
+        run: uv run --no-default-groups --group frontend pytest -m frontend
