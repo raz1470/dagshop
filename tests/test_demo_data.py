@@ -1,13 +1,14 @@
-"""Tests for `demo_data.py`: the synthetic dataset used by
-`dagshop generate-demo-data` (see its module docstring for the intended
-causal structure and why it exists)."""
+"""Tests for `demo_data.py`: the synthetic datasets used by
+`dagshop generate-demo-data` (see the module docstring, and each
+generator's own docstring, for the intended causal structure and why
+each exists)."""
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from dagshop.demo_data import make_demo_data
+from dagshop.demo_data import make_csat_demo_data, make_demo_data
 
 
 def test_default_shape_and_columns():
@@ -65,3 +66,104 @@ def test_unrelated_columns_are_uncorrelated_with_outcome():
     data = make_demo_data(n_rows=2000, random_state=0)
     corr = np.corrcoef(data["unrelated_score"], data["outcome"])[0, 1]
     assert abs(corr) < 0.1
+
+
+# -- make_csat_demo_data ------------------------------------------------------
+
+
+def test_csat_default_shape_and_columns():
+    data = make_csat_demo_data()
+    assert len(data) == 500
+    assert list(data.columns) == [
+        "age",
+        "friction_severity",
+        "time_to_respond",
+        "num_transfers",
+        "num_escalations",
+        "num_agents_spoken_to",
+        "time_to_resolve",
+        "resolved",
+        "repeat_contact",
+        "csat",
+    ]
+
+
+def test_csat_n_rows_is_respected():
+    data = make_csat_demo_data(n_rows=37)
+    assert len(data) == 37
+
+
+def test_csat_binary_columns_are_zero_or_one():
+    data = make_csat_demo_data(n_rows=500, random_state=1)
+    assert set(data["resolved"].unique()) <= {0, 1}
+    assert set(data["repeat_contact"].unique()) <= {0, 1}
+    # both classes actually occur at this size, or the association scan
+    # (which needs 2 classes per binary column) has nothing to score
+    assert set(data["resolved"].unique()) == {0, 1}
+    assert set(data["repeat_contact"].unique()) == {0, 1}
+
+
+def test_csat_same_random_state_is_reproducible():
+    first = make_csat_demo_data(n_rows=50, random_state=5)
+    second = make_csat_demo_data(n_rows=50, random_state=5)
+    pd.testing.assert_frame_equal(first, second)
+
+
+def test_csat_different_random_state_differs():
+    first = make_csat_demo_data(n_rows=50, random_state=5)
+    second = make_csat_demo_data(n_rows=50, random_state=6)
+    assert not first["friction_severity"].equals(second["friction_severity"])
+
+
+def test_csat_nonnegative_columns_stay_nonnegative():
+    # friction_severity/time_to_respond are gamma-distributed (>= 0 by
+    # construction); the count columns and time_to_resolve are clipped
+    # or built from nonnegative pieces. A negative value here would mean
+    # a clip/construction bug, not a modelling choice.
+    data = make_csat_demo_data(n_rows=2000, random_state=0)
+    for column in [
+        "friction_severity",
+        "time_to_respond",
+        "num_transfers",
+        "num_escalations",
+        "num_agents_spoken_to",
+        "time_to_resolve",
+    ]:
+        assert (data[column] >= 0).all(), column
+
+
+def test_csat_is_within_documented_range():
+    data = make_csat_demo_data(n_rows=2000, random_state=0)
+    assert data["csat"].between(0.0, 10.0).all()
+
+
+def test_csat_friction_severity_is_strongly_associated_with_csat():
+    # Sanity check on the ground truth the module docstring claims:
+    # friction_severity should be the single strongest correlate of
+    # csat, direct effect plus everything downstream of it combined.
+    data = make_csat_demo_data(n_rows=5000, random_state=0)
+    corr = data.corr(numeric_only=True)["csat"].drop("csat").abs()
+    assert corr.idxmax() == "friction_severity"
+    assert corr["friction_severity"] > 0.7
+
+
+def test_csat_indirect_ancestors_are_still_correlated_with_csat():
+    # The point of this scenario (SCOPE.md's "Causal attribution
+    # feature" build order step 3): num_transfers, num_escalations,
+    # num_agents_spoken_to, and time_to_respond are NOT direct parents
+    # of csat, only ancestors through time_to_resolve/resolved. If the
+    # generator's multi-hop wiring were broken (e.g. a dropped term),
+    # one of these would read as disconnected noise instead.
+    data = make_csat_demo_data(n_rows=5000, random_state=0)
+    corr = data.corr(numeric_only=True)["csat"].drop("csat").abs()
+    for column in ["num_transfers", "num_escalations", "num_agents_spoken_to"]:
+        assert corr[column] > 0.2, column
+
+
+def test_csat_age_and_time_to_respond_are_the_weakest_drivers():
+    # Documented in make_csat_demo_data's docstring as the two weakest
+    # (but still genuine, not disconnected) drivers.
+    data = make_csat_demo_data(n_rows=5000, random_state=0)
+    corr = data.corr(numeric_only=True)["csat"].drop("csat").abs()
+    weakest_two = corr.nsmallest(2).index.tolist()
+    assert set(weakest_two) == {"age", "time_to_respond"}

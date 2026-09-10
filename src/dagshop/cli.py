@@ -8,10 +8,13 @@ subcommands:
   docstring) with argument parsing and a uvicorn run loop; no
   application logic lives here.
 - `dagshop generate-demo-data OUTPUT.csv` -- wraps `demo_data.py`'s
-  `make_demo_data` (SCOPE.md's "Manual testing" section), for someone
-  without a real dataset yet to generate one with a known causal
-  structure and try `launch` against it. Added session 7, after Ryan
-  asked for a way to test the app without his own data.
+  `make_demo_data`/`make_csat_demo_data` (SCOPE.md's "Manual testing"
+  section), for someone without a real dataset yet to generate one with
+  a known causal structure and try `launch` against it. Added session 7,
+  after Ryan asked for a way to test the app without his own data.
+  `--scenario` (session 12) picks which generator: `confounder`
+  (default, the original) or `csat` (the causal attribution feature's
+  multi-hop demo, SCOPE.md build order step 3).
 
 Decisions from NOTES.md session 6 (the `launch` subcommand), all asked
 of and confirmed by Ryan before writing this module:
@@ -61,7 +64,7 @@ from pathlib import Path
 
 import uvicorn
 
-from dagshop.demo_data import make_demo_data
+from dagshop.demo_data import make_csat_demo_data, make_demo_data
 from dagshop.server import create_app
 
 _BROWSER_OPEN_DELAY_SECONDS = 1.0
@@ -172,6 +175,18 @@ def _add_generate_demo_data_subparser(subparsers: argparse._SubParsersAction) ->
         help="Path to write the generated CSV to (default: inputs/demo.csv).",
     )
     demo.add_argument(
+        "--scenario",
+        choices=["confounder", "csat"],
+        default="confounder",
+        help=(
+            "Which synthetic scenario to generate (default: confounder). "
+            "confounder: the original small confounder/treatment/mediator/outcome "
+            "DAG. csat: the multi-hop customer-service operations DAG for the "
+            "causal attribution feature -- see dagshop.demo_data's module docstring "
+            "for both."
+        ),
+    )
+    demo.add_argument(
         "--n-rows",
         type=int,
         default=500,
@@ -273,6 +288,22 @@ def _run_generate_demo_data(args: argparse.Namespace, parser: argparse.ArgumentP
             f"{args.output} already exists. Pass --force to overwrite, "
             "or choose a different output path."
         )
+
+    if args.scenario == "csat":
+        data = make_csat_demo_data(n_rows=args.n_rows, random_state=args.random_state)
+        data.to_csv(args.output, index=False)
+
+        print(f"Wrote {len(data)} rows to {args.output}")
+        print()
+        print("Ground truth (see dagshop.demo_data's module docstring for exact coefficients):")
+        print("  roots:        age, friction_severity, time_to_respond")
+        print("  operational:  num_transfers, num_escalations, num_agents_spoken_to")
+        print("  resolution:   time_to_resolve, resolved (binary), repeat_contact (binary)")
+        print("  target:       csat")
+        print()
+        print("Try:")
+        print(f"  dagshop launch {shlex.quote(str(args.output))} --outcome csat")
+        return
 
     data = make_demo_data(n_rows=args.n_rows, random_state=args.random_state)
     data.to_csv(args.output, index=False)
