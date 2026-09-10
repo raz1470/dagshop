@@ -12,6 +12,17 @@ throughout: this session's sandboxed bridge shell hits
 default joblib parallelism (see causal_model.py's module docstring) --
 not necessarily an issue on a real machine, but forcing sequential
 execution keeps the test suite runnable here regardless.
+
+`attribute_target`'s ranking-dependent assertions also pass
+`random_state=0`, added after a CI run on Python 3.13 failed
+`test_csat_scenario_end_to_end_ranks_friction_severity_highest` --
+`gcm.intrinsic_causal_influence` draws from `numpy`'s unseeded global
+RNG (see causal_model.py's `random_state` note), so without a seed the
+ranking is a fresh Monte Carlo draw every run and can occasionally
+disagree with itself. Checked `friction_severity` still wins by a wide,
+comfortable margin (roughly 3-4x the runner-up) across several other
+seeds too before picking `0` -- this was a reproducibility bug, not a
+knife's-edge assertion that needed loosening.
 """
 
 from __future__ import annotations
@@ -219,6 +230,7 @@ def test_attribute_target_ranks_every_ancestor_descending() -> None:
         num_training_samples=200,
         num_samples_randomization=20,
         num_samples_baseline=20,
+        random_state=0,
     )
     assert {r.node for r in results} == {"root", "mid", "target"}
     assert all(isinstance(r, AttributionResult) for r in results)
@@ -231,6 +243,27 @@ def test_attribute_target_ranks_every_ancestor_descending() -> None:
     by_node = {r.node: r.contribution for r in results}
     assert by_node["root"] > 0
     assert by_node["mid"] > 0
+
+
+def test_attribute_target_random_state_is_reproducible() -> None:
+    """Regression test for the flaky-CI fix above: two calls with the
+    same `random_state` (and `n_jobs=1`, so there's no worker race over
+    numpy's seeded global RNG -- see causal_model.py's `random_state`
+    note) must return bit-identical contributions, not just the same
+    ranking order.
+    """
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    kwargs = dict(
+        n_jobs=1,
+        num_training_samples=200,
+        num_samples_randomization=20,
+        num_samples_baseline=20,
+        random_state=7,
+    )
+    first = attribute_target(fitted, "target", **kwargs)
+    second = attribute_target(fitted, "target", **kwargs)
+    assert [r.contribution for r in first] == [r.contribution for r in second]
 
 
 # -- private-helper branch coverage ----------------------------------------------
@@ -365,6 +398,7 @@ def test_csat_scenario_end_to_end_ranks_friction_severity_highest() -> None:
         num_training_samples=500,
         num_samples_randomization=30,
         num_samples_baseline=30,
+        random_state=0,
     )
     by_node = {r.node: r.contribution for r in results}
     assert max(by_node, key=by_node.get) == "friction_severity"

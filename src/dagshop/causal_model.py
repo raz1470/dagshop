@@ -125,6 +125,26 @@ Ryan (flagging per PREFERENCES.md):
   independently. Here every node's mechanism is fit as part of one shared
   model over the same rows, so the drop has to be joint (one row missing
   any DAG column is dropped from the whole fit) rather than per-node.
+- **`attribute_target`'s `random_state` (correction, found via a flaky
+  CI run on Python 3.13, not asked of Ryan).** `gcm.intrinsic_causal_influence`
+  draws its baseline/randomization samples and its Shapley subset/
+  permutation sampling from `numpy`'s *global* `np.random` state, not a
+  seeded local generator -- confirmed by reading `dowhy.gcm.shapley`/
+  `dowhy.gcm.influence`'s source, which call `np.random.choice`/
+  `np.random.randint` directly throughout. With `n_jobs=1` (sequential,
+  no worker races over that shared state) this makes a given call fully
+  reproducible for a fixed seed, but *without* one it is not reproducible
+  at all -- two calls back to back, or the same test on two Python
+  versions, can rank ancestors differently whenever their true
+  contributions are close. `attribute_target` now takes an optional
+  `random_state` that seeds `numpy.random` for the duration of the call
+  and restores whatever state was there before (`_random_state_override`,
+  same pattern as `_n_jobs_override` above). Left `None` (unseeded, matches
+  prior behavior) unless a caller passes one -- `server.py`'s
+  `/api/causal/attribute/{target_node}` route now passes the same
+  `random_state` already used for `fit_causal_model`, so a workshop
+  clicking "Show drivers" twice for the same target sees a stable
+  ranking rather than one that can shuffle between clicks.
 """
 
 from __future__ import annotations
@@ -175,6 +195,30 @@ def _n_jobs_override(n_jobs: int | None):
         yield
     finally:
         gcm_config.set_default_n_jobs(previous)
+
+
+@contextlib.contextmanager
+def _random_state_override(random_state: int | None):
+    """Temporarily seed numpy's global RNG, if given, and restore it after.
+
+    See the module docstring's `random_state` note: `dowhy.gcm`'s Shapley/
+    influence code draws from `numpy`'s global `np.random` state directly,
+    not a seeded local generator, so this is the only way to make a call
+    reproducible without patching `dowhy` itself. Saving/restoring the
+    prior state (rather than just calling `np.random.seed`) keeps this
+    from leaking into whatever the caller does next, the same reasoning
+    `_n_jobs_override` above already applies to the parallelism global. A
+    no-op when `random_state` is `None`.
+    """
+    if random_state is None:
+        yield
+        return
+    previous_state = np.random.get_state()
+    np.random.seed(random_state)
+    try:
+        yield
+    finally:
+        np.random.set_state(previous_state)
 
 
 @dataclass(frozen=True)
@@ -292,6 +336,7 @@ def attribute_target(
     num_samples_randomization: int | None = None,
     num_samples_baseline: int | None = None,
     n_jobs: int | None = None,
+    random_state: int | None = None,
 ) -> list[AttributionResult]:
     """Rank every ancestor of `target_node` by its intrinsic causal influence.
 
@@ -307,6 +352,16 @@ def attribute_target(
     `num_samples_baseline` are left at `dowhy`'s own defaults unless
     given explicitly. `n_jobs` is left unset (`dowhy`'s own default,
     parallel) unless given explicitly -- see module docstring.
+    `random_state`, if given, seeds `numpy`'s global RNG for the
+    duration of the call (`_random_state_override`); left `None`
+    (unseeded) by default. Only actually guarantees a reproducible
+    ranking under sequential execution (`n_jobs=1`, or a build small
+    enough that `dowhy`'s own default parallelism never kicks in) -- see
+    module docstring's `random_state` note. Under real parallelism,
+    worker processes can still pull from the shared, seeded state in a
+    different order run to run, so `random_state` alone does not
+    guarantee reproducibility there; pass `n_jobs=1` too if that
+    matters.
     """
     if target_node not in fitted.dag.nodes:
         raise KeyError(f"no node {target_node!r}")
@@ -319,7 +374,7 @@ def attribute_target(
     if num_samples_baseline is not None:
         kwargs["num_samples_baseline"] = num_samples_baseline
 
-    with _n_jobs_override(n_jobs):
+    with _n_jobs_override(n_jobs), _random_state_override(random_state):
         contributions = gcm.intrinsic_causal_influence(
             fitted.scm, target_node=target_node, **kwargs
         )
