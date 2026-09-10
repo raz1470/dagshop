@@ -79,6 +79,24 @@ def scoped_client(scoped_csv):
     return TestClient(app)
 
 
+@pytest.fixture
+def sequential_gcm_jobs():
+    """Forces `dowhy.gcm` to run sequentially for the causal-attribution
+    tests below. This sandboxed bridge shell hits `BrokenProcessPool`/
+    `OSError: Too many open files` under dowhy's default joblib
+    parallelism (see `causal_model.py`'s module docstring) -- not
+    necessarily an issue on a real machine. `server.py`'s causal
+    endpoints don't expose an `n_jobs` override (deliberately minimal
+    API surface), so this overrides dowhy's own global default instead,
+    restoring it afterward."""
+    from dowhy.gcm import config as gcm_config
+
+    previous = gcm_config.default_n_jobs
+    gcm_config.set_default_n_jobs(1)
+    yield
+    gcm_config.set_default_n_jobs(previous)
+
+
 def _first_pair(client: TestClient) -> tuple[str, str]:
     row = client.get("/api/tables").json()["full_table"][0]
     return row["predictor"], row["target"]
@@ -440,6 +458,63 @@ def test_session_load_does_not_touch_tables(client, tmp_path):
     client.post("/api/session/load", json={"path": str(session_path)})
     after = client.get("/api/tables").json()
     assert before == after
+
+
+# -- causal attribution --------------------------------------------------------
+
+
+def test_attribute_before_build_is_400(client):
+    resp = client.get("/api/causal/attribute/a")
+    assert resp.status_code == 400
+    assert "build" in resp.json()["detail"]
+
+
+def test_build_causal_model(client, sequential_gcm_jobs):
+    client.post("/api/edges", json={"source": "a", "target": "b", "sign": "+"})
+    client.post("/api/edges", json={"source": "b", "target": "c", "sign": "+"})
+    resp = client.post("/api/causal/build")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["fitted"] is True
+    assert set(body["attributable_nodes"]) == {"a", "b", "c"}
+    assert body["sign_disagreements"] == [] or isinstance(body["sign_disagreements"], list)
+    assert "falsified" in body["falsify"]
+    assert "falsifiable" in body["falsify"]
+    assert "report" in body["falsify"]
+
+
+def test_build_causal_model_cyclic_graph_is_400(client, sequential_gcm_jobs):
+    client.post("/api/edges", json={"source": "a", "target": "b", "sign": "+"})
+    client.post("/api/edges", json={"source": "b", "target": "c", "sign": "+"})
+    # server.py's add_edge route already catches and reports CycleWarning
+    # in its JSON response (see test_add_edge_reports_cycle_warning); the
+    # edge is still added, which is what this test needs.
+    client.post("/api/edges", json={"source": "c", "target": "a", "sign": "+"})
+    resp = client.post("/api/causal/build")
+    assert resp.status_code == 400
+
+
+def test_attribute_after_build(client, sequential_gcm_jobs):
+    client.post("/api/edges", json={"source": "a", "target": "b", "sign": "+"})
+    client.post("/api/edges", json={"source": "b", "target": "c", "sign": "+"})
+    build_resp = client.post("/api/causal/build")
+    assert build_resp.status_code == 200
+
+    resp = client.get("/api/causal/attribute/c")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["target_node"] == "c"
+    nodes = {row["node"] for row in body["contributions"]}
+    assert nodes == {"a", "b", "c"}
+    contributions = [row["contribution"] for row in body["contributions"]]
+    assert contributions == sorted(contributions, reverse=True)
+
+
+def test_attribute_unknown_node_is_404(client, sequential_gcm_jobs):
+    client.post("/api/edges", json={"source": "a", "target": "b", "sign": "+"})
+    client.post("/api/causal/build")
+    resp = client.get("/api/causal/attribute/nope")
+    assert resp.status_code == 404
 
 
 # -- static assets ------------------------------------------------------------------

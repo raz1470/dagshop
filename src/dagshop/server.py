@@ -33,6 +33,27 @@ once `n` is 50+ (SCOPE.md's stated scale target): the cache can hold
 
 Needs graph.py and associate.py working first, since it serves their
 outputs. See SCOPE.md build order step 3.
+
+Causal attribution (SCOPE.md build order step 5, session 12): two more
+endpoints on top of the same in-memory state model above, not a second
+session concept. `POST /api/causal/build` calls `causal_model.fit_causal_model`
+against the *current* `dag` (whatever the workshop has edited it to by the
+time build is clicked, not the startup snapshot) and `data`, then
+`causal_model.falsify_causal_graph`, and caches the fitted model in a
+closure variable (`causal_model_state`) the same way `dag` itself is
+cached -- "cache the result" per SCOPE.md's build-order wording. Editing
+the graph after a build does not invalidate that cache automatically
+(matches the rest of this file: nothing here auto-invalidates the
+association scan either); the workshop rebuilds by calling the endpoint
+again. `GET /api/causal/attribute/{target_node}` reads that cache and
+raises a plain 400 (via `HTTPException`, same pattern as the export/
+session-load routes) if nothing has been built yet, rather than silently
+building on first use -- fitting is not cheap enough to hide behind a GET.
+Both routes reuse the existing `KeyError`/`ValueError` exception handlers
+above rather than adding new ones: `causal_model.py`'s own errors
+(`GraphValidationError` for a cyclic graph, `ColumnTypeError` for a
+non-numeric column, `KeyError` for an unknown target node) already map
+cleanly to 400/404 through them.
 """
 
 from __future__ import annotations
@@ -51,6 +72,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from dagshop.associate import scan_associations
+from dagshop.causal_model import (
+    FittedCausalModel,
+    attribute_target,
+    falsify_causal_graph,
+    fit_causal_model,
+)
 from dagshop.graph import CycleWarning, DAGModel, GraphValidationError, Role, Sign
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -168,6 +195,11 @@ def create_app(
     )
     if initial_session is not None:
         dag = DAGModel.load_session(initial_session)
+
+    # Cache for the fitted causal model, mirroring `dag`/`scan` above: set
+    # by POST /api/causal/build, read by GET /api/causal/attribute/... .
+    # None until the first successful build.
+    causal_model_state: FittedCausalModel | None = None
 
     app = FastAPI(title="DAGshop")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -319,6 +351,34 @@ def create_app(
                 detail=f"no cached plot for {predictor!r} -> {target!r}",
             )
         return asdict(plot)
+
+    # -- causal attribution (SCOPE.md build order step 5) ------------------
+
+    @app.post("/api/causal/build")
+    def build_causal_model() -> dict[str, Any]:
+        nonlocal causal_model_state
+        fitted = fit_causal_model(dag, data, random_state=random_state)
+        falsify = falsify_causal_graph(fitted, data)
+        causal_model_state = fitted
+        return {
+            "fitted": True,
+            "attributable_nodes": dag.nodes,
+            "sign_disagreements": [asdict(d) for d in fitted.sign_disagreements],
+            "falsify": asdict(falsify),
+        }
+
+    @app.get("/api/causal/attribute/{target_node}")
+    def get_causal_attribution(target_node: str) -> dict[str, Any]:
+        if causal_model_state is None:
+            raise HTTPException(
+                status_code=400,
+                detail="causal model not built yet -- POST /api/causal/build first",
+            )
+        contributions = attribute_target(causal_model_state, target_node)
+        return {
+            "target_node": target_node,
+            "contributions": [asdict(r) for r in contributions],
+        }
 
     return app
 
