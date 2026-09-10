@@ -239,10 +239,23 @@ class SignDisagreement:
 
 @dataclass(frozen=True)
 class AttributionResult:
-    """One ranking-table row: `node`'s intrinsic contribution to the attribution target."""
+    """One ranking-table row: `node`'s intrinsic contribution to the attribution target.
+
+    `share` is `contribution` divided by the sum of every row's
+    `contribution` for this call -- by the Shapley efficiency property
+    that sum equals the target's total variance, so `share` reads as
+    "this node's percentage of the target's variance," summing to ~1.0
+    (modulo float error) across the whole result list. That list
+    includes a row for the target node itself (its own unexplained
+    noise, not a driver) -- callers ranking or displaying "drivers"
+    should treat `node == target_node` as a residual bucket, not a
+    driver, rather than dropping it (dropping it would make the
+    remaining shares no longer sum to 1).
+    """
 
     node: str
     contribution: float
+    share: float
 
 
 @dataclass(frozen=True)
@@ -347,7 +360,10 @@ def attribute_target(
     SCOPE.md's `make_csat_demo_data` docstring for why the demo data is
     deliberately multi-hop). Results are sorted by contribution,
     descending (see module docstring for why raw value, not absolute
-    value).
+    value). Each result's `share` is its contribution as a fraction of
+    the total across this same call, including the target node's own
+    row -- see `AttributionResult`'s docstring for why that row stays in
+    rather than getting filtered out.
 
     `num_training_samples`/`num_samples_randomization`/
     `num_samples_baseline` are left at `dowhy`'s own defaults unless
@@ -380,7 +396,24 @@ def attribute_target(
             fitted.scm, target_node=target_node, **kwargs
         )
     ranked = sorted(contributions.items(), key=lambda item: item[1], reverse=True)
-    return [AttributionResult(node=node, contribution=float(value)) for node, value in ranked]
+    # Sum of raw contributions, not the target's actual sample variance:
+    # the Shapley efficiency property says they're equal in theory, but
+    # dividing by the sum computed here keeps `share` self-consistent
+    # with the numbers in this same result list (summing to exactly 1,
+    # modulo float error) even if Monte Carlo noise makes the two differ
+    # slightly in practice. A near-zero total (e.g. a constant target
+    # with no real variance to attribute) would make `share` a division
+    # by ~0 blow up into meaningless noise -- 0.0 for every row is the
+    # honest answer there, not a NaN or an arbitrarily large ratio.
+    total = sum(value for _, value in ranked)
+    return [
+        AttributionResult(
+            node=node,
+            contribution=float(value),
+            share=float(value / total) if total else 0.0,
+        )
+        for node, value in ranked
+    ]
 
 
 def falsify_causal_graph(
