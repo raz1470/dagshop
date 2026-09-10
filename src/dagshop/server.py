@@ -374,7 +374,12 @@ def create_app(
                 status_code=400,
                 detail="causal model not built yet -- POST /api/causal/build first",
             )
-        contributions = attribute_target(causal_model_state, target_node)
+        # random_state=random_state (session 12, added while fixing a
+        # flaky CI ranking test): without it, gcm.intrinsic_causal_influence
+        # draws from numpy's unseeded global RNG, so a workshop clicking
+        # "Show drivers" twice for the same target could see the ranking
+        # shuffle between clicks -- see causal_model.py's module docstring.
+        contributions = attribute_target(causal_model_state, target_node, random_state=random_state)
         return {
             "target_node": target_node,
             "contributions": [asdict(r) for r in contributions],
