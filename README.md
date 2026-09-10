@@ -124,8 +124,10 @@ model selection, and any treatment/outcome role tags feeding calls like
 ## From DAG to causal analysis with dowhy.gcm
 
 DAGshop's job stops at the exported DAG -- the analysis itself is
-`dowhy.gcm`'s (not a DAGshop dependency; `pip install dowhy` in your own
-environment). All four examples below share this setup:
+`dowhy.gcm`'s. `dowhy` ships as a DAGshop dependency, so no separate
+install is needed; the examples below still run in your own script
+against the exported file, independent of the app. All four examples
+below share this setup:
 
 ```python
 import networkx as nx
