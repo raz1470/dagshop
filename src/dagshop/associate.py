@@ -12,8 +12,8 @@ matching `Y`'s (the target's) role: `treatment_table`, `outcome_table`,
 or `covariate_table`. Since every column falls into exactly one role,
 this is a clean three-way partition of the *same* `n * (n - 1)` pairs
 an unscoped scan would run -- scoped mode no longer saves any fitting
-work once treatments/outcomes are designated (see the session 10
-decision note below); the payoff is purely organizational, splitting
+work once treatments/outcomes are designated (see the decision note
+below); the payoff is purely organizational, splitting
 one big association picture into three labeled tables instead of one.
 Unscoped mode skips the split entirely and returns everything in
 `full_table`. No threshold-based flagging: this module produces ranking
@@ -31,10 +31,10 @@ variables are out of scope). `scan_associations` rejects any non-numeric
 column with a `ColumnTypeError` up front, before fitting anything, rather
 than silently coercing it.
 
-Judgment calls made in this module, not directed by SCOPE.md or asked of
-Ryan (flagging per PREFERENCES.md):
+Judgment calls made in this module, not directed by SCOPE.md
+(flagging per PREFERENCES.md):
 
-- **Held-out scoring.** SCOPE.md/Ryan decided the score *type* (R^2 for
+- **Held-out scoring.** SCOPE.md decided the score *type* (R^2 for
   continuous, ROC AUC for binary, `predict_proba` not the raw class
   prediction) but not whether it is in-sample or held-out.
   `HistGradientBoosting*` can fit training data closely enough that an
@@ -63,12 +63,11 @@ Ryan (flagging per PREFERENCES.md):
   is issued) rather than aborting the whole scan. Mirrors graph.py's
   cycle handling: warn and continue, don't except.
 
-Decision from session 10 (asked of and confirmed by Ryan before writing
-`covariate_table`, revised once during the same session): the first cut
-built `covariate_table` as pairs *among* covariates only, leaving
+`covariate_table`'s design went through one revision: the first cut
+built it as pairs *among* covariates only, leaving
 `treatment -> mediator`-style relationships (a designated column as
-*predictor* of a plain covariate) unscanned anywhere -- discovered when
-Ryan asked why the tool couldn't show how a treatment drives a mediator.
+*predictor* of a plain covariate) unscanned anywhere -- a real gap,
+since the tool couldn't show how a treatment drives a mediator.
 Working through it, `treatment_table`/`outcome_table` already cover
 treatment<->treatment, outcome<->outcome, and treatment<->outcome
 symmetrically for free (each shows up once, from whichever table's
@@ -77,7 +76,7 @@ Closing it by routing every pair by the target's role, rather than
 special-casing the reverse direction, makes the three tables an exact
 partition of the same `n * (n - 1)` pairs an unscoped scan runs: no
 duplicate fits, and total scan cost stops depending on how many columns
-are covariates. Ryan confirmed this is what he wants -- full picture,
+are covariates. This is the intended behavior -- full picture,
 with treatment(s)/outcome(s) used purely to group/label associations
 rather than to keep the scan cheap. `max_rows`/`test_size` are still
 reused as-is (no separate row cap): once every pair gets fit regardless
@@ -184,7 +183,7 @@ class AssociationScan:
     `scoped`: SCOPE.md's "ranked association table(s)... split into
     'associated with treatment(s)' / 'associated with outcome(s)' shown
     side by side when designated, otherwise a single table," plus a
-    third table (session 10) for every column that is neither a
+    third table for every column that is neither a
     treatment nor an outcome. Every column has exactly one role, so each
     ordered pair `(X, Y)` lands in exactly one of the three tables,
     chosen by `Y`'s (the target's) role -- together they partition the
@@ -264,7 +263,7 @@ def scan_associations(
     df_sub = _subsample(data, max_rows=max_rows, random_state=random_state)
 
     # Every column can end up as a `run_pairs` target: treatment/outcome
-    # columns for the scoped tables, and (session 10) every covariate for
+    # columns for the scoped tables, and every covariate for
     # `covariate_table` too -- so `target_kinds` covers all of `columns`
     # rather than just the designated treatment/outcome names.
     target_kinds = {name: _target_kind(df_sub[name]) for name in columns}
@@ -314,8 +313,8 @@ def scan_associations(
         # outcome) gets the same treatment: every *other* column vs each
         # covariate-as-target. Together with the two tables above, this
         # partitions the full n * (n - 1) pairs by the target's role --
-        # no pair fit twice, no pair left unscanned (session 10, revised:
-        # see the module docstring's decision note).
+        # no pair fit twice, no pair left unscanned (see the module
+        # docstring's decision note).
         excluded = set(treatment_names) | set(outcome_names)
         covariate_columns = [c for c in columns if c not in excluded]
         covariate_table = (

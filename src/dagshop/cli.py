@@ -10,14 +10,12 @@ subcommands:
 - `dagshop generate-demo-data OUTPUT.csv` -- wraps `demo_data.py`'s
   `make_demo_data`/`make_csat_demo_data` (SCOPE.md's "Manual testing"
   section), for someone without a real dataset yet to generate one with
-  a known causal structure and try `launch` against it. Added session 7,
-  after Ryan asked for a way to test the app without his own data.
-  `--scenario` (session 12) picks which generator: `confounder`
+  a known causal structure and try `launch` against it.
+  `--scenario` picks which generator: `confounder`
   (default, the original) or `csat` (the causal attribution feature's
   multi-hop demo, SCOPE.md build order step 3).
 
-Decisions from NOTES.md session 6 (the `launch` subcommand), all asked
-of and confirmed by Ryan before writing this module:
+Decisions for the `launch` subcommand:
 
 - **CLI framework: stdlib `argparse`.** Zero new dependency, so no new
   entry on SCOPE.md's dependency-telemetry-audit list.
@@ -30,18 +28,16 @@ of and confirmed by Ryan before writing this module:
   server, AWS CodeArtifact, GitHub Packages, ...) and none exists today.
   This slice adds `[project.scripts]` and confirms `uv build` produces a
   correct wheel/sdist; it does not add a publish workflow. Revisit once
-  a registry is chosen (see NOTES.md session 6 and SCOPE.md open items).
+  a registry is chosen (see SCOPE.md open items).
 - **`--host`/`--port` flags, browser auto-open, and `--session` resume**
-  are all in scope for the `launch` subcommand (Ryan picked all three
-  when asked which launch-time behaviors to add).
+  are all in scope for the `launch` subcommand.
 
-Decision from NOTES.md session 7 (the `generate-demo-data` subcommand,
-asked of and confirmed by Ryan before writing it): ships as a real
+Decision for the `generate-demo-data` subcommand: ships as a real
 subcommand rather than a standalone dev script under `scripts/`, so
 anyone who `pip install`s dagshop without their own data yet can try
 the tool immediately. This does add a small, permanent, user-facing
-surface for what's really a testing convenience -- the trade-off Ryan
-picked over keeping it dev-only.
+surface for what's really a testing convenience -- a deliberate
+trade-off over keeping it dev-only.
 
 Not built here: the association-scan defaults duplicated in `launch`
 below (`max_rows`, `test_size`, `random_state`, `plot_grid_size`)

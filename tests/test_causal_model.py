@@ -7,7 +7,7 @@ fast -- one slower end-to-end smoke test at the bottom exercises the real
 CSAT scenario instead.
 
 `n_jobs=1` is passed to `attribute_target`/`falsify_causal_graph`
-throughout: this session's sandboxed bridge shell hits
+throughout: the sandboxed bridge shell used for development hits
 `BrokenProcessPool`/`OSError: Too many open files` under `dowhy`'s
 default joblib parallelism (see causal_model.py's module docstring) --
 not necessarily an issue on a real machine, but forcing sequential
@@ -377,8 +377,8 @@ def _csat_dag() -> DAGModel:
 
 
 def test_csat_scenario_end_to_end_ranks_friction_severity_highest() -> None:
-    """`friction_severity` is documented (demo_data.py's own docstring,
-    and session 12's NOTES.md) as the strongest driver of `csat` in this
+    """`friction_severity` is documented (demo_data.py's own docstring)
+    as the strongest driver of `csat` in this
     scenario, since nearly every other driver is downstream of it. This
     is the closest thing to a regression test for the whole module
     working together against real, documented ground truth, not just its

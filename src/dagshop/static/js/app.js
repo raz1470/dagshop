@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * DAGshop workshop UI. Rough first pass (NOTES.md session 5): working,
+ * DAGshop workshop UI. Rough first pass: working,
  * not polished. Vanilla JS, no build step, no framework -- matches
  * "vendored, no CDN" static assets with nothing to bundle.
  *
@@ -468,8 +468,8 @@ function cyStyle() {
       selector: 'edge[sign = "-"]',
       style: { "line-color": "#c23b3b", "target-arrow-color": "#c23b3b" },
     },
-    // cytoscape-edgehandles 4.0.1's actual classes (see the "Bug fix,
-    // session 8" comment in initCytoscape for how these get applied --
+    // cytoscape-edgehandles 4.0.1's actual classes (see the edge-drawing
+    // bug-fix comment in initCytoscape for how these get applied --
     // there is no separate "handle" node in this vendored version, so
     // there used to be a dead ".eh-handle" rule here that never
     // matched anything; removed).
@@ -501,8 +501,8 @@ function initCytoscape(graph) {
     // Cytoscape core's own box-selection gesture is bound to Shift+drag
     // by default (regardless of whether the drag starts on a node or
     // the background), which raced against the Shift+drag-to-connect
-    // gesture added below and won: Ryan saw a selection box instead of
-    // an edge (session 8, second bug in the same interaction). Nothing
+    // gesture added below and won: a selection box appeared instead of
+    // an edge (second bug in the same interaction). Nothing
     // in this app uses multi-select, so disabling it outright is a
     // clean fix rather than trying to out-race it.
     boxSelectionEnabled: false,
@@ -525,7 +525,7 @@ function initCytoscape(graph) {
     snap: false,
   });
 
-  // Bug fix, session 8 (Ryan: "it wont let me draw arrows"). The
+  // Bug fix: Shift+drag couldn't draw an edge. The
   // vendored cytoscape-edgehandles 4.0.1 has no separate "handle" dot
   // to drag (grepped the whole vendored file: the string "eh-handle"
   // -- our own now-removed dead CSS selector -- appears nowhere in the
@@ -541,11 +541,11 @@ function initCytoscape(graph) {
   // start an edge -- it just repositioned the node (or did nothing, if
   // locked).
   //
-  // Revised, session 9. The first fix (session 8) called `eh.start()`
-  // ourselves from a `cy.on("tapstart", "node", ...)` listener whenever
+  // Revised once. The first fix called `eh.start()`
+  // directly from a `cy.on("tapstart", "node", ...)` listener whenever
   // Shift was already held at mousedown, rather than going through
-  // `enableDrawMode()`. That shipped untested and mostly worked for
-  // Ryan by hand, but failed reliably in CI's headless run: calling
+  // `enableDrawMode()`. That shipped untested and mostly worked by
+  // hand, but failed reliably in CI's headless run: calling
   // `eh.start()` from inside `tapstart` is too late to matter, because
   // `enableDrawMode()` (see `toggleDrawMode` above) also runs
   // `cy.autoungrabify(true)` -- specifically so the source node can't
@@ -555,8 +555,8 @@ function initCytoscape(graph) {
   // events edgehandles' `preview()` relies on to ever notice a target
   // node) for as long as any node reports `grabbed() === true`
   // (confirmed by reading cytoscape core's own minified drag handling:
-  // `ne&&ne.grabbed()||O==re||(...emit tapdragover...)`). Ryan's manual
-  // testing never hit this -- his drags apparently always involved a
+  // `ne&&ne.grabbed()||O==re||(...emit tapdragover...)`). Manual
+  // testing never hit this -- drags by hand apparently always involved a
   // locked (pinned treatment/outcome) node, which can't be natively
   // grabbed -- but the Playwright test picked two ordinary grabbable
   // nodes and hit it on every run.
