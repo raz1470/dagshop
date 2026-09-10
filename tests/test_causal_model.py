@@ -14,15 +14,17 @@ not necessarily an issue on a real machine, but forcing sequential
 execution keeps the test suite runnable here regardless.
 
 `attribute_target`'s ranking-dependent assertions also pass
-`random_state=0`, added after a CI run on Python 3.13 failed
-`test_csat_scenario_end_to_end_ranks_friction_severity_highest` --
+`random_state=0`, added after a CI run on Python 3.13 failed the CSAT
+end-to-end test below (`test_csat_scenario_end_to_end_ranks_resolved_highest`,
+renamed since when the CSAT demo's own DAG was restructured; the
+underlying reproducibility fix and its reasoning are unchanged):
 `gcm.intrinsic_causal_influence` draws from `numpy`'s unseeded global
 RNG (see causal_model.py's `random_state` note), so without a seed the
 ranking is a fresh Monte Carlo draw every run and can occasionally
-disagree with itself. Checked `friction_severity` still wins by a wide,
-comfortable margin (roughly 3-4x the runner-up) across several other
-seeds too before picking `0` -- this was a reproducibility bug, not a
-knife's-edge assertion that needed loosening.
+disagree with itself. Checked the top-ranked ancestor stays top across
+several other seeds too before picking `0` -- this was a
+reproducibility bug, not a knife's-edge assertion that needed
+loosening.
 """
 
 from __future__ import annotations
@@ -351,38 +353,42 @@ def _csat_dag() -> DAGModel:
     ):
         dag.add_node(name)
     edges = [
-        ("age", "csat", "+"),
         ("friction_severity", "num_transfers", "+"),
         ("friction_severity", "num_escalations", "+"),
-        ("friction_severity", "time_to_resolve", "+"),
-        ("friction_severity", "resolved", "-"),
-        ("friction_severity", "repeat_contact", "+"),
-        ("friction_severity", "csat", "-"),
-        ("time_to_respond", "time_to_resolve", "+"),
         ("num_transfers", "num_agents_spoken_to", "+"),
-        ("num_transfers", "time_to_resolve", "+"),
         ("num_escalations", "num_agents_spoken_to", "+"),
+        ("num_transfers", "time_to_resolve", "+"),
         ("num_escalations", "time_to_resolve", "+"),
-        ("num_escalations", "resolved", "-"),
         ("num_agents_spoken_to", "time_to_resolve", "+"),
         ("time_to_resolve", "resolved", "-"),
-        ("time_to_resolve", "csat", "-"),
-        ("resolved", "repeat_contact", "-"),
-        ("resolved", "csat", "+"),
+        ("num_transfers", "resolved", "-"),
+        ("num_escalations", "resolved", "-"),
+        ("age", "csat", "-"),
+        ("time_to_respond", "csat", "-"),
         ("repeat_contact", "csat", "-"),
+        ("time_to_resolve", "csat", "-"),
+        ("num_agents_spoken_to", "csat", "-"),
+        ("resolved", "csat", "+"),
     ]
     for source, target, sign in edges:
         dag.add_edge(source, target, sign)
     return dag
 
 
-def test_csat_scenario_end_to_end_ranks_friction_severity_highest() -> None:
-    """`friction_severity` is documented (demo_data.py's own docstring)
-    as the strongest driver of `csat` in this
-    scenario, since nearly every other driver is downstream of it. This
-    is the closest thing to a regression test for the whole module
-    working together against real, documented ground truth, not just its
-    pieces in isolation.
+def test_csat_scenario_end_to_end_ranks_resolved_highest() -> None:
+    """`resolved` is documented (demo_data.py's own docstring) as the
+    strongest ancestor of `csat` in this scenario -- it is `csat`'s
+    largest-coefficient direct parent. This is the closest thing to a
+    regression test for the whole module working together against
+    real, documented ground truth, not just its pieces in isolation.
+
+    `csat`'s own row (its intrinsic/unexplained variance, not an
+    ancestor) is excluded before ranking: at these reduced sample
+    settings it is the single largest value in the raw result, which
+    would make `max()` pick `csat` itself rather than any real driver
+    -- see demo_data.py's docstring for why that row is large here, and
+    SCOPE.md's "Requested changes" backlog for the UI-side "Other"
+    relabeling this maps to.
     """
     from dagshop.demo_data import make_csat_demo_data
 
@@ -400,5 +406,5 @@ def test_csat_scenario_end_to_end_ranks_friction_severity_highest() -> None:
         num_samples_baseline=30,
         random_state=0,
     )
-    by_node = {r.node: r.contribution for r in results}
-    assert max(by_node, key=by_node.get) == "friction_severity"
+    by_node = {r.node: r.contribution for r in results if r.node != "csat"}
+    assert max(by_node, key=by_node.get) == "resolved"
