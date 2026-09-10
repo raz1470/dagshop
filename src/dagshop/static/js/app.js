@@ -36,6 +36,13 @@ const pathModalInput = document.getElementById("path-modal-input");
 const pathModalConfirm = document.getElementById("path-modal-confirm");
 const pathModalCancel = document.getElementById("path-modal-cancel");
 
+const btnCausalBuild = document.getElementById("btn-causal-build");
+const causalBuildResult = document.getElementById("causal-build-result");
+const causalAttributeControls = document.getElementById("causal-attribute-controls");
+const causalTargetSelect = document.getElementById("causal-target-select");
+const btnCausalAttribute = document.getElementById("btn-causal-attribute");
+const causalContributionContainer = document.getElementById("causal-contribution-container");
+
 let cy = null;
 
 // -- API helper -------------------------------------------------------------
@@ -688,6 +695,149 @@ function wireTopbar() {
   });
 }
 
+
+// -- causal attribution panel (SCOPE.md build order step 6) -----------------------
+
+function formatFalsifyBool(value) {
+  if (value === null) return "inconclusive";
+  return value ? "yes" : "no";
+}
+
+function renderCausalBuildResult(result) {
+  causalBuildResult.innerHTML = "";
+  causalBuildResult.classList.remove("hidden");
+
+  const summary = document.createElement("p");
+  summary.className = "causal-falsify-summary";
+  summary.textContent =
+    `Falsified: ${formatFalsifyBool(result.falsify.falsified)} — falsifiable: ` +
+    `${formatFalsifyBool(result.falsify.falsifiable)} (significance level ${result.falsify.significance_level}).`;
+  causalBuildResult.appendChild(summary);
+
+  const reportDetails = document.createElement("details");
+  const reportSummary = document.createElement("summary");
+  reportSummary.textContent = "Full refutation report";
+  reportDetails.appendChild(reportSummary);
+  const pre = document.createElement("pre");
+  pre.className = "causal-falsify-report";
+  pre.textContent = result.falsify.report;
+  reportDetails.appendChild(pre);
+  causalBuildResult.appendChild(reportDetails);
+
+  // Surfaced open (not collapsed) when non-empty: "worth a second look"
+  // per SCOPE.md's soft-constraints decision, not something to bury
+  // behind a click the way the (usually empty, usually skimmed) full
+  // report above is.
+  if (result.sign_disagreements.length > 0) {
+    const disagreeDetails = document.createElement("details");
+    disagreeDetails.open = true;
+    const disagreeSummary = document.createElement("summary");
+    disagreeSummary.textContent =
+      `${result.sign_disagreements.length} edge(s) disagree with the raw correlation`;
+    disagreeDetails.appendChild(disagreeSummary);
+    const ul = document.createElement("ul");
+    for (const d of result.sign_disagreements) {
+      const li = document.createElement("li");
+      li.textContent =
+        `${d.parent} → ${d.child} (asserted "${d.asserted_sign}"): correlation ${d.correlation.toFixed(2)}`;
+      ul.appendChild(li);
+    }
+    disagreeDetails.appendChild(ul);
+    causalBuildResult.appendChild(disagreeDetails);
+  }
+}
+
+function populateCausalTargetSelect(nodes, preferredDefault) {
+  causalTargetSelect.innerHTML = "";
+  for (const name of nodes) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    causalTargetSelect.appendChild(option);
+  }
+  if (preferredDefault && nodes.includes(preferredDefault)) {
+    causalTargetSelect.value = preferredDefault;
+  }
+}
+
+function buildContributionTable(targetNode, rows) {
+  const table = document.createElement("table");
+  table.className = "rank-table";
+  const caption = document.createElement("caption");
+  caption.textContent = `Drivers of "${targetNode}" (${rows.length})`;
+  table.appendChild(caption);
+
+  const thead = document.createElement("thead");
+  thead.innerHTML = "<tr><th>Node</th><th>Contribution</th></tr>";
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(row.node)}</td>
+      <td class="score-cell">${row.contribution.toFixed(4)}</td>
+    `;
+    // Row click reuses the existing plot modal (SCOPE.md build order
+    // step 6 + the "Considered and set aside" note on PDP-style curves)
+    // rather than a new causal-specific plot endpoint: same
+    // associate.py plot cache the ranking tables above already use.
+    // Only pairs the association scan actually ran are cached --
+    // openPlot's existing 404 fallback message already covers a driver
+    // the scan never scored against this particular target (e.g. a
+    // covariate x covariate pair under a scoped scan), so this can
+    // legitimately show "no cached plot" for some rows. Accepted for
+    // v1 rather than adding a second plot data source for this one
+    // panel.
+    tr.addEventListener("click", () => openPlot(row.node, targetNode));
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
+async function attributeCausalTarget(targetNode) {
+  causalContributionContainer.innerHTML = "<p>Loading…</p>";
+  try {
+    const result = await api(`/api/causal/attribute/${encodeURIComponent(targetNode)}`);
+    causalContributionContainer.innerHTML = "";
+    causalContributionContainer.appendChild(buildContributionTable(targetNode, result.contributions));
+  } catch (err) {
+    causalContributionContainer.innerHTML = `<p>Could not load contributions: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+async function buildCausalModel() {
+  btnCausalBuild.disabled = true;
+  btnCausalBuild.textContent = "Building…";
+  try {
+    const result = await api("/api/causal/build", "POST");
+    renderCausalBuildResult(result);
+    // Re-fetch the graph rather than trusting a stale module-level
+    // copy: `dag.outcomes` isn't held anywhere on the frontend between
+    // init() and now, and a node could have been removed in between.
+    const graph = await api("/api/graph");
+    const preferredDefault = graph.outcomes[0] || result.attributable_nodes[0];
+    populateCausalTargetSelect(result.attributable_nodes, preferredDefault);
+    causalAttributeControls.classList.remove("hidden");
+    if (causalTargetSelect.value) {
+      await attributeCausalTarget(causalTargetSelect.value);
+    }
+  } catch (err) {
+    showBanner(`Could not build causal model: ${err.message}`);
+  } finally {
+    btnCausalBuild.disabled = false;
+    btnCausalBuild.textContent = "Build causal model";
+  }
+}
+
+function wireCausalPanel() {
+  btnCausalBuild.addEventListener("click", buildCausalModel);
+  btnCausalAttribute.addEventListener("click", () => {
+    if (causalTargetSelect.value) attributeCausalTarget(causalTargetSelect.value);
+  });
+}
+
 // -- init ------------------------------------------------------------------------
 
 async function init() {
@@ -701,6 +851,7 @@ async function init() {
     renderTables(tables);
     const eh = initCytoscape(graph);
     wireTopbar();
+    wireCausalPanel();
     // Exposed for the Playwright smoke test (test_frontend_smoke.py) and
     // for manual debugging in the browser console -- not used by app.js
     // itself, which keeps `cy` as a plain module-level variable above.
