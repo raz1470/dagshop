@@ -760,6 +760,28 @@ function populateCausalTargetSelect(nodes, preferredDefault) {
   }
 }
 
+// `row.share` (contribution as a fraction of the total across the whole
+// call, target's own row included -- see causal_model.py's
+// AttributionResult docstring) is already a natural 0-1 range, unlike
+// the association-table score column, so no per-metric rescaling is
+// needed here the way `scoreBarFraction` does for R2 vs ROC AUC.
+// Clamped anyway since Monte Carlo noise can occasionally push a raw
+// contribution (and so its share) very slightly negative.
+function contributionBarFraction(row) {
+  return Math.max(0, Math.min(1, row.share));
+}
+
+function contributionCellHtml(row) {
+  const pct = (row.share * 100).toFixed(1);
+  const barPct = (contributionBarFraction(row) * 100).toFixed(1);
+  return `
+    <div class="score-cell">
+      <span class="score-bar-track"><span class="score-bar-fill" style="width: ${barPct}%"></span></span>
+      <span class="score-text">${pct}%</span>
+    </div>
+  `;
+}
+
 function buildContributionTable(targetNode, rows) {
   const table = document.createElement("table");
   table.className = "rank-table";
@@ -768,15 +790,21 @@ function buildContributionTable(targetNode, rows) {
   table.appendChild(caption);
 
   const thead = document.createElement("thead");
-  thead.innerHTML = "<tr><th>Node</th><th>Contribution</th></tr>";
+  thead.innerHTML = "<tr><th>Node</th><th>Share</th></tr>";
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
   for (const row of rows) {
     const tr = document.createElement("tr");
+    // The target node's own row is its residual/unexplained variance,
+    // not a driver of itself (see AttributionResult's docstring for why
+    // the API still returns it rather than excluding it from the sum)
+    // -- relabeled to "Other" for display only, row.node stays the real
+    // name for the click handler below.
+    const displayName = row.node === targetNode ? "Other" : row.node;
     tr.innerHTML = `
-      <td>${escapeHtml(row.node)}</td>
-      <td class="score-cell">${row.contribution.toFixed(4)}</td>
+      <td>${escapeHtml(displayName)}</td>
+      <td>${contributionCellHtml(row)}</td>
     `;
     // Row click reuses the existing plot modal (SCOPE.md build order
     // step 6 + the "Considered and set aside" note on PDP-style curves)
