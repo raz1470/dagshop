@@ -33,15 +33,22 @@ classifiers = [
 # order). graph.py needs networkx; associate.py needs pandas/sklearn;
 # server.py needs fastapi + a plain (no [standard] extra, to keep the
 # dependency surface -- and telemetry audit surface, see SCOPE.md -- as
-# small as possible) uvicorn to run it. dowhy itself is NOT a dagshop
-# dependency: the DAG this tool exports is loaded into the user's own
-# dowhy.gcm downstream, per SCOPE.md.
+# small as possible) uvicorn to run it.
+#
+# dowhy was deliberately kept OUT of this list through the original build:
+# the exported DAG was loaded into the user's own dowhy.gcm downstream, per
+# SCOPE.md. SCOPE.md's "Causal attribution feature" section reverses that:
+# dagshop now wraps dowhy.gcm itself (causal_model.py, build order step 4)
+# for refutation and attribution, so dowhy is a real dependency from here
+# on. dowhy's own metadata caps at <3.14 (see .python-version, pinned to
+# 3.12 for local dev because of this).
 dependencies = [
     "networkx>=3.2",
     "pandas>=2.2",
     "scikit-learn>=1.4",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "dowhy>=0.14",
 ]
 
 [project.scripts]

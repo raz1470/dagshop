@@ -280,9 +280,17 @@ def test_open_browser_after_delay_uses_explicit_delay(monkeypatch):
 def test_generate_demo_data_parser_defaults(tmp_path):
     parser = cli._build_parser()
     args = parser.parse_args(["generate-demo-data", str(tmp_path / "demo.csv")])
+    assert args.scenario == "confounder"
     assert args.n_rows == 500
     assert args.random_state == 0
     assert args.force is False
+
+
+def test_generate_demo_data_parser_rejects_unknown_scenario(tmp_path, capsys):
+    parser = cli._build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["generate-demo-data", str(tmp_path / "demo.csv"), "--scenario", "bogus"])
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_generate_demo_data_output_defaults_to_inputs_demo_csv():
@@ -319,6 +327,34 @@ def test_generate_demo_data_force_overwrites(tmp_path):
     output.write_text("stale")
     cli.main(["generate-demo-data", str(output), "--force", "--n-rows", "10"])
     assert len(pd.read_csv(output)) == 10
+
+
+def test_generate_demo_data_csat_scenario_writes_csv(tmp_path, capsys):
+    output = tmp_path / "csat.csv"
+    cli.main(
+        [
+            "generate-demo-data",
+            str(output),
+            "--scenario",
+            "csat",
+            "--n-rows",
+            "40",
+            "--random-state",
+            "3",
+        ]
+    )
+
+    assert output.exists()
+    written = pd.read_csv(output)
+    assert len(written) == 40
+    assert "csat" in written.columns
+    assert "treatment" not in written.columns
+
+    out = capsys.readouterr().out
+    assert "Wrote 40 rows" in out
+    assert "dagshop launch" in out
+    assert "--outcome csat" in out
+    assert "--treatment treatment --outcome outcome" not in out
 
 
 def test_generate_demo_data_quotes_path_with_space_in_hint(tmp_path, capsys):
