@@ -85,6 +85,8 @@ def test_parser_defaults(tmp_path):
     assert args.test_size == 0.2
     assert args.random_state == 0
     assert args.plot_grid_size == 50
+    assert args.strong_r2 == 0.01
+    assert args.strong_auc == 0.55
     assert args.session is None
     assert args.host == "127.0.0.1"
     assert args.port == 8000
@@ -123,6 +125,10 @@ def test_parser_overrides(tmp_path):
             "7",
             "--plot-grid-size",
             "20",
+            "--strong-r2",
+            "0.05",
+            "--strong-auc",
+            "0.6",
             "--host",
             "0.0.0.0",
             "--port",
@@ -134,6 +140,8 @@ def test_parser_overrides(tmp_path):
     assert args.test_size == pytest.approx(0.3)
     assert args.random_state == 7
     assert args.plot_grid_size == 20
+    assert args.strong_r2 == pytest.approx(0.05)
+    assert args.strong_auc == pytest.approx(0.6)
     assert args.host == "0.0.0.0"
     assert args.port == 9000
     assert args.no_browser is True
@@ -194,6 +202,8 @@ def test_main_calls_create_app_with_parsed_args(mock_create_app, mock_uvicorn_ru
         test_size=0.25,
         random_state=3,
         plot_grid_size=10,
+        strong_r2=0.01,
+        strong_auc=0.55,
         initial_session=None,
     )
     mock_uvicorn_run.assert_called_once_with(

@@ -16,10 +16,20 @@ work once treatments/outcomes are designated (see the decision note
 below); the payoff is purely organizational, splitting
 one big association picture into three labeled tables instead of one.
 Unscoped mode skips the split entirely and returns everything in
-`full_table`. No threshold-based flagging: this module produces ranking
-table(s) and a per-pair plot cache only, per SCOPE.md's "Sorting, not
-auto-flagging" -- spotting a variable that ranks high on multiple
-tables is left to the PM/DS.
+`full_table`.
+
+**Strong/weak classification (reverses this module's earlier "no
+threshold-based flagging, sorting not auto-flagging" stance -- a
+deliberate reversal at more variables/tables than the original
+decision anticipated, not an oversight).** Every `PairResult` carries
+`is_strong`, from `scan_associations`'s `strong_r2`/`strong_auc`
+thresholds. This never removes, reorders, or hides a row -- `is_strong`
+is purely an extra classification the UI uses to split each table into
+a "strong" section and a "weak" section, both fully visible. Two
+thresholds, not one shared cutoff, because R^2 and ROC AUC are
+different metrics on different scales (R^2's useful range starts near
+0; ROC AUC's "no skill" floor sits at 0.5), so a single number can't
+sensibly classify both -- see `_score_model`/`ScoreName`.
 
 Depends only on pandas/sklearn, not on graph.py or the UI (dagshop has no
 dowhy dependency at all -- the DAG this tool exports is loaded into the
@@ -134,13 +144,22 @@ class AssociationSkippedWarning(UserWarning):
 
 @dataclass(frozen=True)
 class PairResult:
-    """One ranking-table row: how well `predictor` predicts `target`."""
+    """One ranking-table row: how well `predictor` predicts `target`.
+
+    `is_strong` classifies the row against `scan_associations`'s
+    `strong_r2`/`strong_auc` thresholds (see that function's docstring
+    and the module docstring's "Strong/weak classification" note). It
+    never removes or reorders a row -- every row still appears,
+    already sorted by score -- it only tells the UI which section
+    (strong/weak) to render a row into.
+    """
 
     predictor: str
     target: str
     score: float
     score_name: ScoreName
     n_used: int
+    is_strong: bool
 
 
 @dataclass(frozen=True)
@@ -215,6 +234,8 @@ def scan_associations(
     test_size: float = 0.2,
     random_state: int = 0,
     plot_grid_size: int = 50,
+    strong_r2: float = 0.01,
+    strong_auc: float = 0.55,
 ) -> AssociationScan:
     """Run the pre-work association scan described in SCOPE.md.
 
@@ -241,6 +262,12 @@ def scan_associations(
             and train/test split, for reproducible scans.
         plot_grid_size: number of points in each pair's cached
             prediction curve (`PairPlotData.grid_x`).
+        strong_r2: an R^2-scored row's `is_strong` is `score > strong_r2`.
+            See the module docstring's "Strong/weak classification" note
+            for why this and `strong_auc` are separate, small-sounding
+            defaults rather than one shared cutoff.
+        strong_auc: an ROC-AUC-scored row's `is_strong` is
+            `score > strong_auc`.
 
     Returns:
         An `AssociationScan`. If neither `treatments` nor `outcomes` is
@@ -289,6 +316,7 @@ def scan_associations(
             x_all, y_all, x_train, x_test, y_train, y_test = prepared
             model = _fit_model(target_kind, random_state, x_train, y_train)
             score, score_name = _score_model(model, target_kind, x_test, y_test)
+            is_strong = score > strong_auc if score_name == "roc_auc" else score > strong_r2
             results.append(
                 PairResult(
                     predictor=predictor,
@@ -296,6 +324,7 @@ def scan_associations(
                     score=score,
                     score_name=score_name,
                     n_used=len(x_all),
+                    is_strong=is_strong,
                 )
             )
             plot_cache[(predictor, target)] = _build_plot_data(

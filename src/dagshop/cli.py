@@ -40,8 +40,8 @@ surface for what's really a testing convenience -- a deliberate
 trade-off over keeping it dev-only.
 
 Not built here: the association-scan defaults duplicated in `launch`
-below (`max_rows`, `test_size`, `random_state`, `plot_grid_size`)
-intentionally mirror `server.create_app`'s own defaults exactly, so
+below (`max_rows`, `test_size`, `random_state`, `plot_grid_size`,
+`strong_r2`, `strong_auc`) intentionally mirror `server.create_app`'s own defaults exactly, so
 `dagshop launch data.csv` with no flags behaves identically to calling
 `create_app` with no keyword overrides. If those defaults ever change
 in `server.py`, change them here too.
@@ -126,6 +126,26 @@ def _add_launch_subparser(subparsers: argparse._SubParsersAction) -> None:
         default=50,
         metavar="N",
         help="Points in each pairwise partial-dependence curve (default: 50).",
+    )
+    launch.add_argument(
+        "--strong-r2",
+        type=float,
+        default=0.01,
+        metavar="THRESHOLD",
+        help=(
+            "An R^2-scored association ranks as 'strong' above this threshold "
+            "(default: 0.01); everything else still shows, in a 'weak' section."
+        ),
+    )
+    launch.add_argument(
+        "--strong-auc",
+        type=float,
+        default=0.55,
+        metavar="THRESHOLD",
+        help=(
+            "An ROC-AUC-scored association ranks as 'strong' above this threshold "
+            "(default: 0.55); everything else still shows, in a 'weak' section."
+        ),
     )
     launch.add_argument(
         "--session",
@@ -264,6 +284,8 @@ def _run_launch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> No
             test_size=args.test_size,
             random_state=args.random_state,
             plot_grid_size=args.plot_grid_size,
+            strong_r2=args.strong_r2,
+            strong_auc=args.strong_auc,
             initial_session=args.session,
         )
     except ValueError as exc:
