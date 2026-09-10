@@ -326,3 +326,60 @@ def test_binary_target_split_leaving_one_class_out_is_skipped() -> None:
     assert skipped.predictor == "p"
     assert skipped.target == "y_rare"
     assert "one class on one side" in skipped.reason
+
+
+# -- strong/weak classification (is_strong) ---------------------------------------
+
+
+def test_is_strong_true_for_strong_r2_false_for_noise() -> None:
+    data = _linear_relationship(n=200)
+    scan = scan_associations(data)
+    signal = _result_for(scan.full_table, "x", "y")
+    noise = _result_for(scan.full_table, "z", "y")
+    assert signal.score_name == "r2"
+    assert signal.is_strong is True
+    assert noise.is_strong is False
+
+
+def test_is_strong_true_for_strong_auc_false_for_noise() -> None:
+    data = _separable_binary(n=60)
+    scan = scan_associations(data, outcomes=["y"])
+    signal = _result_for(scan.outcome_table, "x", "y")
+    noise = _result_for(scan.outcome_table, "z", "y")
+    assert signal.score_name == "roc_auc"
+    assert signal.is_strong is True
+    assert noise.is_strong is False
+
+
+def test_strong_r2_threshold_is_configurable() -> None:
+    data = _linear_relationship(n=200)
+    # x -> y is a near-perfect fit (R^2 close to 1): a threshold set
+    # above that reclassifies it as weak without changing the score.
+    default_scan = scan_associations(data)
+    strict_scan = scan_associations(data, strong_r2=0.999999)
+    default_signal = _result_for(default_scan.full_table, "x", "y")
+    strict_signal = _result_for(strict_scan.full_table, "x", "y")
+    assert default_signal.is_strong is True
+    assert strict_signal.score == pytest.approx(default_signal.score)
+    assert strict_signal.is_strong is False
+
+
+def test_strong_auc_threshold_is_configurable() -> None:
+    data = _separable_binary(n=60)
+    default_scan = scan_associations(data, outcomes=["y"])
+    strict_scan = scan_associations(data, outcomes=["y"], strong_auc=0.999999)
+    default_signal = _result_for(default_scan.outcome_table, "x", "y")
+    strict_signal = _result_for(strict_scan.outcome_table, "x", "y")
+    assert default_signal.is_strong is True
+    assert strict_signal.score == pytest.approx(default_signal.score)
+    assert strict_signal.is_strong is False
+
+
+def test_is_strong_boundary_is_strictly_greater_than() -> None:
+    # A score exactly at the threshold is not "strong" -- is_strong is
+    # score > threshold, not >=, matching scan_associations's docstring.
+    data = _linear_relationship(n=200)
+    signal = _result_for(scan_associations(data).full_table, "x", "y")
+    at_threshold_scan = scan_associations(data, strong_r2=signal.score)
+    at_threshold_signal = _result_for(at_threshold_scan.full_table, "x", "y")
+    assert at_threshold_signal.is_strong is False

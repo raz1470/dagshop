@@ -141,6 +141,8 @@ def create_app(
     test_size: float = 0.2,
     random_state: int = 0,
     plot_grid_size: int = 50,
+    strong_r2: float = 0.01,
+    strong_auc: float = 0.55,
     initial_session: str | Path | None = None,
 ) -> FastAPI:
     """Build the DAGshop FastAPI app for one workshop session.
@@ -189,6 +191,8 @@ def create_app(
         test_size=test_size,
         random_state=random_state,
         plot_grid_size=plot_grid_size,
+        strong_r2=strong_r2,
+        strong_auc=strong_auc,
     )
     dag = _build_initial_dag(
         list(data.columns), treatments=treatments, outcomes=outcomes, random_state=random_state

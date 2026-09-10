@@ -116,6 +116,45 @@ function formatScore(row) {
   return `${row.score.toFixed(3)} (${label})`;
 }
 
+// Bar length as a fraction of each metric's own useful range, not raw
+// score: ROC AUC's "no skill" floor sits at 0.5 (a bar scaled from 0
+// would make every real association look nearly full), while R2's
+// useful range already starts near 0. Clamped to [0, 1] since a
+// negative R2 or a below-floor AUC is a real (if unstrong) result, not
+// a rendering error.
+function scoreBarFraction(row) {
+  const raw = row.score_name === "roc_auc" ? (row.score - 0.5) / 0.5 : row.score;
+  return Math.max(0, Math.min(1, raw));
+}
+
+function scoreCellHtml(row) {
+  const pct = (scoreBarFraction(row) * 100).toFixed(1);
+  return `
+    <div class="score-cell">
+      <span class="score-bar-track"><span class="score-bar-fill" style="width: ${pct}%"></span></span>
+      <span class="score-text">${formatScore(row)}</span>
+    </div>
+  `;
+}
+
+function buildTableRow(row) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td>${escapeHtml(row.predictor)}</td>
+    <td>${escapeHtml(row.target)}</td>
+    <td>${scoreCellHtml(row)}</td>
+    <td>${row.n_used}</td>
+  `;
+  tr.addEventListener("click", () => openPlot(row.predictor, row.target));
+  return tr;
+}
+
+// Splits into a "strong"/"weak" section by row.is_strong (see
+// associate.py's PairResult docstring) rather than filtering anything
+// out -- every row still renders, sorted exactly as the scan returned
+// it. The divider only appears when the table actually mixes both, so
+// an all-strong or all-weak table renders as one plain block like
+// before this feature existed.
 function buildTable(title, rows) {
   const table = document.createElement("table");
   table.className = "rank-table";
@@ -127,17 +166,21 @@ function buildTable(title, rows) {
   thead.innerHTML = "<tr><th>Predictor</th><th>Target</th><th>Score</th><th>n</th></tr>";
   table.appendChild(thead);
 
+  const strong = rows.filter((row) => row.is_strong);
+  const weak = rows.filter((row) => !row.is_strong);
+
   const tbody = document.createElement("tbody");
-  for (const row of rows) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${escapeHtml(row.predictor)}</td>
-      <td>${escapeHtml(row.target)}</td>
-      <td class="score-cell">${formatScore(row)}</td>
-      <td>${row.n_used}</td>
-    `;
-    tr.addEventListener("click", () => openPlot(row.predictor, row.target));
-    tbody.appendChild(tr);
+  for (const row of strong) {
+    tbody.appendChild(buildTableRow(row));
+  }
+  if (strong.length > 0 && weak.length > 0) {
+    const divider = document.createElement("tr");
+    divider.className = "weak-divider";
+    divider.innerHTML = `<th colspan="4">Weak associations</th>`;
+    tbody.appendChild(divider);
+  }
+  for (const row of weak) {
+    tbody.appendChild(buildTableRow(row));
   }
   table.appendChild(tbody);
   return table;

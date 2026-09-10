@@ -211,7 +211,25 @@ def test_tables_unscoped_uses_full_table(client):
     assert body["outcome_table"] == []
     assert body["covariate_table"] == []
     row = body["full_table"][0]
-    assert set(row) == {"predictor", "target", "score", "score_name", "n_used"}
+    assert set(row) == {"predictor", "target", "score", "score_name", "n_used", "is_strong"}
+
+
+def test_tables_strong_threshold_is_configurable(unscoped_csv):
+    """`create_app`'s `strong_r2`/`strong_auc` params reach `scan_associations`
+    and come back out as each row's `is_strong` flag -- checked here with
+    thresholds set to extremes (always/never strong) rather than the real
+    score distribution, so the assertion doesn't depend on what `a`/`b`/`c`'s
+    actual R^2 happens to be."""
+    # r2_score has no lower bound (a bad enough model on a small held-out
+    # split scores well below -1), so the "always strong" threshold needs to
+    # be far below -1, not just below 0.
+    lenient = create_app(unscoped_csv, random_state=RANDOM_STATE, strong_r2=-1e9)
+    strict = create_app(unscoped_csv, random_state=RANDOM_STATE, strong_r2=1.1)
+    lenient_rows = TestClient(lenient).get("/api/tables").json()["full_table"]
+    strict_rows = TestClient(strict).get("/api/tables").json()["full_table"]
+    assert lenient_rows and strict_rows
+    assert all(row["is_strong"] for row in lenient_rows)
+    assert not any(row["is_strong"] for row in strict_rows)
 
 
 def test_tables_scoped_splits_treatment_and_outcome(scoped_client):
