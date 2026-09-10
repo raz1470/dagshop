@@ -327,3 +327,122 @@ button {
 .cy-context-menu button:hover {
   background: #f0f0f3;
 }
+
+/* -- causal attribution panel (SCOPE.md build order step 6) ------------ */
+
+.panel-divider {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 16px 0;
+}
+
+#causal-panel h2 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+
+#causal-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+#causal-panel > button {
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-panel);
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+
+#causal-panel > button:hover {
+  background: #f0f0f3;
+}
+
+#causal-panel > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+#causal-build-result {
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+#causal-build-result.hidden {
+  display: none;
+}
+
+.causal-falsify-summary {
+  margin: 0 0 6px;
+  color: var(--color-text);
+}
+
+.causal-falsify-report {
+  white-space: pre-wrap;
+  font-size: 11px;
+  background: #fbfbfc;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+#causal-build-result details {
+  margin-bottom: 8px;
+}
+
+#causal-build-result summary {
+  cursor: pointer;
+}
+
+#causal-build-result ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+#causal-attribute-controls {
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+#causal-attribute-controls.hidden {
+  display: none;
+}
+
+#causal-attribute-controls label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--color-muted);
+}
+
+.causal-target-row {
+  display: flex;
+  gap: 8px;
+}
+
+#causal-target-select {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font: inherit;
+}
+
+.causal-target-row button {
+  padding: 5px 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-panel);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.causal-target-row button:hover {
+  background: #f0f0f3;
+}
+
+#causal-contribution-container {
+  font-size: 12px;
+}

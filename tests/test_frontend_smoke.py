@@ -25,13 +25,22 @@ Playwright's Chromium download (see NOTES.md sessions 5+) -- so it has
 only been validated by static reading of the vendored
 cytoscape-edgehandles source, not by actually running it. CI is where
 this gets a real signal.
+
+`test_causal_build_and_attribute_panel` (session 12, SCOPE.md build order
+step 6) covers the causal-attribution panel added to `server.py`/`app.js`
+this session: the Build button, the falsification/sign-disagreement
+summary, the target-node picker, the ranked contribution table, and
+the row-click reuse of this same plot modal. Same bridge limitation as
+above -- validated by static reading only here, real signal from CI.
 """
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
+import urllib.request
 
 import numpy as np
 import pandas as pd
@@ -244,3 +253,81 @@ def test_shift_drag_creates_edge(live_server, page):
     assert {"source": source_id, "target": target_id, "sign": "+"} in edges
 
     assert console_errors == [], f"console errors during drag: {console_errors}"
+
+
+def _post_json(url: str, payload: dict) -> None:
+    """Tiny stdlib POST helper -- `live_server` runs a real uvicorn thread,
+    so unlike `test_server.py`'s `TestClient` this needs an actual HTTP
+    call, and `page.request` isn't used here to keep this setup step
+    independent of Playwright's own request-context quirks. No new
+    dependency: `urllib.request` is stdlib.
+    """
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    with urllib.request.urlopen(req) as resp:
+        assert resp.status in (200, 201), resp.status
+
+
+def test_causal_build_and_attribute_panel(live_server, page):
+    """SCOPE.md build order step 6: Build panel, target-node picker,
+    ranked contribution table, row click reusing the plot modal.
+
+    Wires up one real edge first (`age -> outcome`, "+") via a direct
+    API call rather than re-driving Shift+drag -- that gesture is
+    already covered by `test_shift_drag_creates_edge` above, and this
+    test's focus is the causal panel itself, not edge creation.
+    """
+    console_errors: list[str] = []
+
+    page.goto(live_server)
+    page.wait_for_selector("#cy canvas")
+
+    _post_json(f"{live_server}/api/edges", {"source": "age", "target": "outcome", "sign": "+"})
+    page.reload()
+    page.wait_for_selector("#cy canvas")
+
+    # Console listeners attached after reload: a fresh page load resets
+    # any listeners bound to the previous document.
+    page.on("console", lambda msg: msg.type == "error" and console_errors.append(msg.text))
+    page.on("pageerror", lambda exc: console_errors.append(str(exc)))
+
+    assert "hidden" in (page.get_attribute("#causal-attribute-controls", "class") or "")
+
+    page.click("#btn-causal-build")
+
+    # Falsification result and (in this fixture, edge-less-until-now
+    # DAG so genuinely) empty sign-disagreements section render as soon
+    # as the build responds.
+    page.wait_for_selector("#causal-build-result:not(.hidden)")
+    page.wait_for_selector(".causal-falsify-summary")
+
+    # The build panel auto-runs attribution for the default target
+    # (the designated outcome, "outcome") once it completes.
+    page.wait_for_selector("#causal-contribution-container table.rank-table tbody tr")
+    rows = page.query_selector_all("#causal-contribution-container table.rank-table tbody tr")
+    assert len(rows) >= 1
+    row_texts = [r.inner_text() for r in rows]
+    assert any("age" in t for t in row_texts)
+
+    assert "hidden" not in (page.get_attribute("#causal-attribute-controls", "class") or "")
+    assert page.input_value("#causal-target-select") == "outcome"
+
+    # Row click reuses the existing plot modal (SCOPE.md: "reuses the
+    # existing plot modal for a PDP-style curve"). Click the "age" row
+    # specifically, not just rows[0] -- the ranking's top row can be
+    # "outcome" itself (`intrinsic_causal_influence` includes the
+    # target's own unexplained variance, per causal_model.py), and a
+    # self-pair is never in the association scan's plot cache (it only
+    # ever scores ordered pairs of *different* columns), so asserting a
+    # real Plotly render below needs a row the scan actually covers.
+    # "age -> outcome" is: session 10's decision note confirms a scoped
+    # scan covers every ordered pair, `outcome_table` included, so any
+    # covariate as a predictor of the designated outcome is cached.
+    age_row_index = next(i for i, t in enumerate(row_texts) if "age" in t)
+    rows[age_row_index].click()
+    page.wait_for_selector("#plot-modal:not(.hidden)")
+    page.wait_for_selector("#plot-modal-body .js-plotly-plot")
+
+    assert console_errors == [], f"console errors in causal panel: {console_errors}"

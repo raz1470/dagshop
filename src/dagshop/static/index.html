@@ -31,6 +31,28 @@
         <p id="tables-hint">Click a row to see its association plot.</p>
         <div id="tables-container"></div>
         <div id="skipped-container"></div>
+
+        <hr class="panel-divider" />
+
+        <section id="causal-panel">
+          <h2>Causal attribution</h2>
+          <p id="causal-hint">
+            Builds a causal model from the graph above (nodes + signed edges) and ranks every
+            ancestor of a chosen node by its variance-based contribution (a Shapley value from
+            <code>dowhy.gcm</code>'s intrinsic causal influence) &mdash; not a percentage of any
+            one row's score.
+          </p>
+          <button id="btn-causal-build" type="button">Build causal model</button>
+          <div id="causal-build-result" class="hidden"></div>
+          <div id="causal-attribute-controls" class="hidden">
+            <label for="causal-target-select">Target node</label>
+            <div class="causal-target-row">
+              <select id="causal-target-select"></select>
+              <button id="btn-causal-attribute" type="button">Show drivers</button>
+            </div>
+          </div>
+          <div id="causal-contribution-container"></div>
+        </section>
       </aside>
 
       <section id="canvas-wrap">
