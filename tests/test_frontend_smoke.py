@@ -15,20 +15,19 @@ suite, just confirmation that the page actually renders once
 Cytoscape canvas has drawn nodes with the right treatment/outcome roles,
 and nothing throws a console error on load.
 
-`test_shift_drag_creates_edge` (added session 8, after Ryan reported
-"it wont let me draw arrows") is the reason this file's original scope
+`test_shift_drag_creates_edge` is the reason this file's original scope
 statement above was a real gap, not just a formality: no test here ever
-exercised edge creation, so the drawMode bug fixed in `app.js` this
-session shipped straight through a green frontend job. This is still
-untested from the bridge Claude runs on -- its network allowlist blocks
-Playwright's Chromium download (see NOTES.md sessions 5+) -- so it has
-only been validated by static reading of the vendored
-cytoscape-edgehandles source, not by actually running it. CI is where
-this gets a real signal.
+exercised edge creation, so the drawMode bug fixed in `app.js` (see
+that file's own comments) shipped straight through a green frontend
+job. This is still untested from the bridge Claude runs on -- its
+network allowlist blocks Playwright's Chromium download (see
+NOTES.md) -- so it has only been validated by static reading of the
+vendored cytoscape-edgehandles source, not by actually running it. CI
+is where this gets a real signal.
 
-`test_causal_build_and_attribute_panel` (session 12, SCOPE.md build order
-step 6) covers the causal-attribution panel added to `server.py`/`app.js`
-this session: the Build button, the falsification/sign-disagreement
+`test_causal_build_and_attribute_panel` (SCOPE.md build order
+step 6) covers the causal-attribution panel added to `server.py`/`app.js`:
+the Build button, the falsification/sign-disagreement
 summary, the target-node picker, the ranked contribution table, and
 the row-click reuse of this same plot modal. Same bridge limitation as
 above -- validated by static reading only here, real signal from CI.
@@ -322,9 +321,10 @@ def test_causal_build_and_attribute_panel(live_server, page):
     # self-pair is never in the association scan's plot cache (it only
     # ever scores ordered pairs of *different* columns), so asserting a
     # real Plotly render below needs a row the scan actually covers.
-    # "age -> outcome" is: session 10's decision note confirms a scoped
-    # scan covers every ordered pair, `outcome_table` included, so any
-    # covariate as a predictor of the designated outcome is cached.
+    # "age -> outcome" is: a scoped scan covers every ordered pair,
+    # `outcome_table` included (see associate.py's own decision note),
+    # so any covariate as a predictor of the designated outcome is
+    # cached.
     age_row_index = next(i for i, t in enumerate(row_texts) if "age" in t)
     rows[age_row_index].click()
     page.wait_for_selector("#plot-modal:not(.hidden)")

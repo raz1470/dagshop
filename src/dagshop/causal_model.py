@@ -12,8 +12,8 @@ Pure logic, no UI dependency: testable standalone against
 `demo_data.make_csat_demo_data`, same pattern `graph.py` and `associate.py`
 followed. See SCOPE.md build order step 4.
 
-Judgment calls made in this module, not directed by SCOPE.md or asked of
-Ryan (flagging per PREFERENCES.md):
+Judgment calls made in this module, not directed by SCOPE.md
+(flagging per PREFERENCES.md):
 
 - **`AdditiveNoiseModel` + `HistGradientBoostingRegressor` for every
   node, binary included -- not `ClassifierFCM`/`HistGradientBoostingClassifier`
@@ -60,8 +60,8 @@ Ryan (flagging per PREFERENCES.md):
   as-is. Handing over `dag.graph` unmodified would let `gcm.fit` (which
   can annotate node attributes) mutate the workshop's own live graph in
   place.
-- **What "soft" monotonic constraints (session 12, confirmed with Ryan)
-  actually means here.** Every non-root mechanism's `monotonic_cst` still
+- **What "soft" monotonic constraints actually mean here.**
+  Every non-root mechanism's `monotonic_cst` still
   *hard*-enforces the edge's asserted sign at the sklearn level -- there
   is no sklearn option to make that constraint advisory, and dropping it
   would defeat the point of asserting a sign at all. "Soft" instead means
@@ -89,9 +89,10 @@ Ryan (flagging per PREFERENCES.md):
   argument.** `gcm.intrinsic_causal_influence`'s default Shapley
   estimation, and `gcm.falsify.falsify_graph`'s internal kernel-based
   independence test, both use joblib/loky multiprocessing, which failed
-  in this session's sandboxed bridge shell (`BrokenProcessPool` /
-  `OSError: Too many open files`) -- a property of that specific
-  sandboxed dev environment, not necessarily Ryan's real machine. Tried
+  in the sandboxed bridge shell used for development
+  (`BrokenProcessPool` / `OSError: Too many open files`) -- a property
+  of that specific sandboxed dev environment, not necessarily the
+  machine this runs on in production. Tried
   passing `n_jobs` straight through to `falsify_graph`'s own `n_jobs`
   argument first; that only covers one of its two internal parallel
   calls -- the kernel-based test's own bootstrap resampling
@@ -126,7 +127,7 @@ Ryan (flagging per PREFERENCES.md):
   model over the same rows, so the drop has to be joint (one row missing
   any DAG column is dropped from the whole fit) rather than per-node.
 - **`attribute_target`'s `random_state` (correction, found via a flaky
-  CI run on Python 3.13, not asked of Ryan).** `gcm.intrinsic_causal_influence`
+  CI run on Python 3.13).** `gcm.intrinsic_causal_influence`
   draws its baseline/randomization samples and its Shapley subset/
   permutation sampling from `numpy`'s *global* `np.random` state, not a
   seeded local generator -- confirmed by reading `dowhy.gcm.shapley`/

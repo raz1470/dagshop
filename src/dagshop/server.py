@@ -8,7 +8,7 @@ modals, DAG canvas backed by `graph.py`. Local-only (localhost), no
 external network calls, per SCOPE.md's data handling and security
 constraints.
 
-State model (asked Ryan, see NOTES.md session 5): a single server-side,
+State model: a single server-side,
 in-memory session. `create_app` loads `data.csv` once, runs the
 association scan once, and builds one `DAGModel` -- all held as closures
 over the route handlers, not per-request or per-client state. This
@@ -17,14 +17,14 @@ tool, so there is no need for session IDs or multi-tenant state. The
 frontend calls one endpoint per user action (add edge, move a node, set
 a sign, ...) rather than round-tripping the whole graph.
 
-Data entry (asked Ryan): `create_app(data_path, treatments=..., outcomes=...)`
+Data entry: `create_app(data_path, treatments=..., outcomes=...)`
 is the whole boundary with `cli.py` (SCOPE.md build order step 4, not
 built yet). `cli.py`'s job will be exactly: parse
 `dagshop launch data.csv [--treatment X ...] [--outcome Y ...]` and call
 this factory, then run it with uvicorn. No upload endpoint: the CSV is
 read from disk before the server ever starts serving requests.
 
-Plot wire format (asked Ryan): `AssociationScan.plot_cache` is keyed by
+Plot wire format: `AssociationScan.plot_cache` is keyed by
 `(predictor, target)` tuples and is never bulk-serialized. Instead
 `GET /api/plot/{predictor}/{target}` looks up one entry on demand, fetched
 only when a ranking-table row or a canvas edge is clicked. This matters
@@ -34,7 +34,7 @@ once `n` is 50+ (SCOPE.md's stated scale target): the cache can hold
 Needs graph.py and associate.py working first, since it serves their
 outputs. See SCOPE.md build order step 3.
 
-Causal attribution (SCOPE.md build order step 5, session 12): two more
+Causal attribution (SCOPE.md build order step 5): two more
 endpoints on top of the same in-memory state model above, not a second
 session concept. `POST /api/causal/build` calls `causal_model.fit_causal_model`
 against the *current* `dag` (whatever the workshop has edited it to by the
@@ -153,11 +153,11 @@ def create_app(
     (next slice) is expected to call this, then hand the result straight
     to uvicorn.
 
-    `initial_session` (added session 6, for `cli.py`'s `--session` flag):
+    `initial_session` (for `cli.py`'s `--session` flag):
     when given, the freshly built DAG from `treatments`/`outcomes` is
     discarded in favor of `DAGModel.load_session(initial_session)`. The
-    association scan still runs against `data_path` regardless -- per
-    the session-5 decision that a loaded session never touches the scan,
+    association scan still runs against `data_path` regardless: a
+    loaded session never touches the scan,
     since the scan is tied to whichever CSV the server was launched
     with, not to whichever session file gets resumed.
 
@@ -176,8 +176,8 @@ def create_app(
     if both:
         # Checked before the (potentially expensive, n*(t+o) fits) scan
         # runs, not after: no point paying for a scan we're about to
-        # reject the input on. graph.py's Role is one tag per node
-        # (session 3 decision), so a column can't be pinned to both the
+        # reject the input on. graph.py's Role is one tag per node,
+        # so a column can't be pinned to both the
         # treatment and outcome layout columns at once.
         raise ValueError(f"columns cannot be both a treatment and an outcome: {sorted(both)}")
 
@@ -374,8 +374,8 @@ def create_app(
                 status_code=400,
                 detail="causal model not built yet -- POST /api/causal/build first",
             )
-        # random_state=random_state (session 12, added while fixing a
-        # flaky CI ranking test): without it, gcm.intrinsic_causal_influence
+        # random_state=random_state (fixes a
+        # flaky ranking test): without it, gcm.intrinsic_causal_influence
         # draws from numpy's unseeded global RNG, so a workshop clicking
         # "Show drivers" twice for the same target could see the ranking
         # shuffle between clicks -- see causal_model.py's module docstring.
