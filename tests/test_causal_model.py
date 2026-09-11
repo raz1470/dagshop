@@ -39,14 +39,18 @@ from scipy.stats import norm
 
 from dagshop.associate import ColumnTypeError
 from dagshop.causal_model import (
+    ActualVsPredictedPlot,
     AttributionResult,
     FalsifyResult,
     MechanismPerformance,
     ModelEvaluation,
+    ObservedVsSampledPlot,
     SignDisagreement,
+    _is_binary_coded,
     _n_jobs_override,
     _sign_disagreements,
     attribute_target,
+    build_node_plots,
     evaluate_causal_model,
     falsify_causal_graph,
     fit_causal_model,
@@ -86,6 +90,28 @@ def _fit(dag: DAGModel, data: pd.DataFrame, **kwargs):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         return fit_causal_model(dag, data, **kwargs)
+
+
+def _root_binary_target_dag_and_data(
+    n_rows: int = 400, random_state: int = 0
+) -> tuple[DAGModel, pd.DataFrame]:
+    """root -> binary_target, "+", root strongly predictive.
+
+    Strong enough separation that a held-out test fold reliably lands
+    both classes and a well-above-chance AUC, without needing a huge
+    `n_rows` to keep the test fast.
+    """
+    rng = np.random.default_rng(random_state)
+    root = rng.normal(0, 1, size=n_rows)
+    prob = 1 / (1 + np.exp(-3.0 * root))
+    binary_target = (rng.uniform(size=n_rows) < prob).astype(float)
+    data = pd.DataFrame({"root": root, "binary_target": binary_target})
+
+    dag = DAGModel()
+    dag.add_node("root")
+    dag.add_node("binary_target")
+    dag.add_edge("root", "binary_target", "+")
+    return dag, data
 
 
 # -- mechanism assignment -------------------------------------------------------
@@ -440,6 +466,59 @@ def test_evaluate_causal_model_significance_level_overrides_dowhy_default() -> N
     fitted = _fit(dag, data)
     result = evaluate_causal_model(fitted, data, significance_level=0.01, n_jobs=1)
     assert result.graph_falsification.significance_level == 0.01
+
+
+# -- build_node_plots -------------------------------------------------------------
+
+
+def test_is_binary_coded() -> None:
+    assert _is_binary_coded(pd.Series([0.0, 1.0, 0.0, 1.0, np.nan])) is True
+    assert _is_binary_coded(pd.Series([0.0, 1.0, 2.0])) is False
+    assert _is_binary_coded(pd.Series([1.0, 1.0, 1.0])) is False
+
+
+def test_build_node_plots_root_node_gets_observed_vs_sampled() -> None:
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    plots = build_node_plots(fitted, data)
+    root_plot = plots["root"]
+    assert isinstance(root_plot, ObservedVsSampledPlot)
+    assert len(root_plot.observed) == len(data)
+    assert len(root_plot.sampled) == len(root_plot.observed)
+
+
+def test_build_node_plots_non_root_continuous_node_gets_no_auc() -> None:
+    dag, data = _root_mid_target_dag_and_data(n_rows=300)
+    fitted = _fit(dag, data)
+    plots = build_node_plots(fitted, data, test_size=0.2, random_state=0)
+    target_plot = plots["target"]
+    assert isinstance(target_plot, ActualVsPredictedPlot)
+    expected_test_rows = round(300 * 0.2)
+    assert len(target_plot.actual) == len(target_plot.predicted) == expected_test_rows
+    assert target_plot.auc is None
+
+
+def test_build_node_plots_binary_node_gets_auc_well_above_chance() -> None:
+    dag, data = _root_binary_target_dag_and_data()
+    fitted = _fit(dag, data)
+    plots = build_node_plots(fitted, data, random_state=0)
+    target_plot = plots["binary_target"]
+    assert isinstance(target_plot, ActualVsPredictedPlot)
+    assert target_plot.auc is not None
+    assert target_plot.auc > 0.7
+
+
+def test_build_node_plots_shares_one_split_across_nodes() -> None:
+    """A different random_state changes which rows land in the test
+    fold -- checked indirectly via the actual-vs-predicted plot's own
+    values differing, since this module doesn't expose the split
+    itself.
+    """
+    dag, data = _root_mid_target_dag_and_data(n_rows=300)
+    fitted = _fit(dag, data)
+    plots_a = build_node_plots(fitted, data, random_state=0)
+    plots_b = build_node_plots(fitted, data, random_state=1)
+    assert plots_a["target"].actual != plots_b["target"].actual
 
 
 # -- end-to-end smoke test against the real CSAT scenario -----------------------
