@@ -137,33 +137,36 @@ def test_csat_is_within_documented_range():
     assert data["csat"].between(0.0, 10.0).all()
 
 
-def test_csat_friction_severity_is_strongly_associated_with_csat():
+def test_csat_resolved_is_strongly_associated_with_csat():
     # Sanity check on the ground truth the module docstring claims:
-    # friction_severity should be the single strongest correlate of
-    # csat, direct effect plus everything downstream of it combined.
+    # resolved should be the single strongest correlate of csat, and by
+    # a wide margin -- it is csat's largest-coefficient direct parent.
     data = make_csat_demo_data(n_rows=5000, random_state=0)
     corr = data.corr(numeric_only=True)["csat"].drop("csat").abs()
-    assert corr.idxmax() == "friction_severity"
-    assert corr["friction_severity"] > 0.7
+    assert corr.idxmax() == "resolved"
+    assert corr["resolved"] > 0.4
 
 
 def test_csat_indirect_ancestors_are_still_correlated_with_csat():
     # The point of this scenario (SCOPE.md's "Causal attribution
-    # feature" build order step 3): num_transfers, num_escalations,
-    # num_agents_spoken_to, and time_to_respond are NOT direct parents
-    # of csat, only ancestors through time_to_resolve/resolved. If the
+    # feature" section): friction_severity, num_transfers, and
+    # num_escalations are NOT direct parents of csat, only ancestors
+    # through time_to_resolve/resolved/num_agents_spoken_to. If the
     # generator's multi-hop wiring were broken (e.g. a dropped term),
     # one of these would read as disconnected noise instead.
     data = make_csat_demo_data(n_rows=5000, random_state=0)
     corr = data.corr(numeric_only=True)["csat"].drop("csat").abs()
-    for column in ["num_transfers", "num_escalations", "num_agents_spoken_to"]:
-        assert corr[column] > 0.2, column
+    for column in ["friction_severity", "num_transfers", "num_escalations"]:
+        assert corr[column] > 0.15, column
 
 
-def test_csat_age_and_time_to_respond_are_the_weakest_drivers():
-    # Documented in make_csat_demo_data's docstring as the two weakest
-    # (but still genuine, not disconnected) drivers.
+def test_csat_age_and_friction_severity_are_the_weakest_correlates():
+    # Weakest two by raw correlation, per make_csat_demo_data's
+    # docstring -- not the same as weakest two by intrinsic causal
+    # influence (also documented there): correlation is a marginal,
+    # single-column measure, so a driver can rank low here while still
+    # carrying a real multi-hop Shapley contribution.
     data = make_csat_demo_data(n_rows=5000, random_state=0)
     corr = data.corr(numeric_only=True)["csat"].drop("csat").abs()
     weakest_two = corr.nsmallest(2).index.tolist()
-    assert set(weakest_two) == {"age", "time_to_respond"}
+    assert set(weakest_two) == {"age", "friction_severity"}

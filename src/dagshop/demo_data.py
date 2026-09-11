@@ -86,71 +86,85 @@ def make_csat_demo_data(n_rows: int = 500, random_state: int = 0) -> pd.DataFram
 
     Ground-truth structure (all columns continuous unless noted; the
     nine drivers and target are SCOPE.md's "Causal attribution feature"
-    brainstorm list verbatim). Deliberately multi-hop: only 5 of the 9
-    drivers are direct parents of `csat`, the other 4 reach it only
+    brainstorm list verbatim). Deliberately multi-hop: only 6 of the 9
+    drivers are direct parents of `csat`, the other 3 reach it only
     through intermediate nodes, so a ranking built from direct parents
     alone would miss them entirely -- the case
     `gcm.intrinsic_causal_influence` (any ancestor, not just parents) is
-    meant to cover once `causal_model.py` (build order step 4) exists.
+    meant to cover.
 
         age                    -- root
         friction_severity      -- root: latent severity/complexity of
                                    the underlying issue
         time_to_respond        -- root: staffing/queue-driven, minutes
                                    to first response
+        repeat_contact (binary) -- root: this customer's own baseline
+                                   propensity to contact support again,
+                                   independent of this particular issue
 
         num_transfers          <- friction_severity
         num_escalations        <- friction_severity
         num_agents_spoken_to   <- num_transfers, num_escalations
 
-        time_to_resolve        <- time_to_respond, friction_severity,
-                                   num_transfers, num_escalations,
+        time_to_resolve        <- num_transfers, num_escalations,
                                    num_agents_spoken_to
-        resolved (binary)      <- time_to_resolve, friction_severity,
+        resolved (binary)      <- time_to_resolve, num_transfers,
                                    num_escalations
-        repeat_contact (binary) <- resolved, friction_severity
 
-        csat (target)          <- age, friction_severity,
-                                   time_to_resolve, resolved,
-                                   repeat_contact
+        csat (target)          <- age, time_to_respond, repeat_contact,
+                                   time_to_resolve, num_agents_spoken_to,
+                                   resolved
 
-    `friction_severity` sits upstream of `num_transfers`/`num_escalations`
-    rather than downstream of them or feeding `csat` directly: SCOPE.md's
-    "Causal attribution feature" section flagged this placement as
-    undecided (issue complexity driving the operational response, vs.
-    the reverse, vs. a parallel direct path), and Ryan picked "issue
-    complexity drives response" when asked directly (session 12).
+    Revised from an earlier version of this scenario: `friction_severity`
+    used to also feed `csat`, `resolved`, and `repeat_contact` directly,
+    and `repeat_contact` used to be caused by `resolved`/
+    `friction_severity` rather than being a root. `friction_severity` is
+    now purely upstream -- every one of its effects on `csat` runs
+    through `num_transfers`/`num_escalations` and what they cascade
+    into, nothing direct -- which makes it a cleaner test of "attribute
+    to every ancestor, not just direct parents" than the earlier version
+    was, since it no longer has a direct edge to lean on. `age` also
+    flips from a small positive effect on `csat` to a small negative
+    one in this revision.
 
-    Every one of the nine drivers is a genuine ancestor of `csat`,
-    `time_to_respond`/`num_transfers`/`num_escalations`/
-    `num_agents_spoken_to` only indirectly (through `time_to_resolve`,
-    and for `num_escalations` also through `resolved`). No pure-noise
-    column is included here (unlike `make_demo_data`'s
-    `unrelated_score`/`unrelated_flag`): SCOPE.md's brainstorm names
-    exactly these nine drivers, nothing extra.
+    Every one of the nine drivers is a genuine ancestor of `csat`.
+    `friction_severity`, `num_transfers`, and `num_escalations` reach
+    it only indirectly, through `time_to_resolve`, `resolved`, and/or
+    `num_agents_spoken_to`. No pure-noise column is included here
+    (unlike `make_demo_data`'s `unrelated_score`/`unrelated_flag`):
+    SCOPE.md's brainstorm names exactly these nine drivers, nothing
+    extra.
 
-    Approximate expected influence on `csat`, strongest to weakest --
-    from this module's own absolute Pearson correlation with `csat` at
-    n=5000, not `gcm.intrinsic_causal_influence` (no causal model exists
-    yet to compute that against; re-check this ranking once
-    `causal_model.py` lands):
+    Expected influence on `csat`, strongest to weakest -- from
+    `causal_model.attribute_target`'s intrinsic causal influence
+    (Shapley-based) against this generator's own output at n=1000,
+    `random_state=0` for both the data and the attribution call,
+    `n_jobs=1` (see `causal_model.py`'s module docstring on why
+    `n_jobs=1` matters for reproducibility). Checked stable across a
+    few other attribution seeds against the same data, at both default
+    and reduced (faster, noisier) sample settings: `resolved` wins the
+    top ancestor spot by a comfortable margin every time.
 
-        friction_severity > time_to_resolve > resolved > repeat_contact
-        > num_transfers > num_agents_spoken_to > num_escalations
-        > age > time_to_respond
+        resolved > time_to_respond > repeat_contact > age
+        > friction_severity > time_to_resolve > num_transfers
+        > num_agents_spoken_to > num_escalations
 
-    `friction_severity` ranks highest despite a modest direct
-    coefficient because nearly everything else in the graph is
-    downstream of it; `age` and `time_to_respond` rank lowest as the two
-    weakest, most indirect drivers, not because either is disconnected
-    from `csat` the way `unrelated_score`/`unrelated_flag` are from
-    `outcome` in `make_demo_data`.
+    `csat`'s own row in the raw `intrinsic_causal_influence` output
+    (its unexplained/intrinsic variance, not an ancestor at all) is
+    larger than any single ancestor's share here -- roughly 43% of the
+    total at n=1000, `random_state=0` -- because most of `csat`'s
+    variance in this synthetic data is noise, by construction
+    (`rng.normal(0, 1)` added at the end). That is expected and is
+    exactly the case the UI's "Other" relabeling (see SCOPE.md's
+    "Requested changes" backlog) exists to make legible, not a sign
+    anything is wrong with the scenario.
     """
     rng = np.random.default_rng(random_state)
 
     age = rng.normal(45, 12, size=n_rows)
     friction_severity = rng.gamma(shape=2.0, scale=2.5, size=n_rows)
     time_to_respond = rng.gamma(shape=3.0, scale=5.0, size=n_rows)
+    repeat_contact = rng.binomial(1, 0.3, size=n_rows)
 
     num_transfers = rng.poisson(0.18 * friction_severity)
     num_escalations = rng.poisson(0.08 * friction_severity)
@@ -158,8 +172,6 @@ def make_csat_demo_data(n_rows: int = 500, random_state: int = 0) -> pd.DataFram
 
     time_to_resolve = np.clip(
         2.0
-        + 0.15 * time_to_respond
-        + 0.8 * friction_severity
         + 1.2 * num_transfers
         + 1.5 * num_escalations
         + 0.5 * num_agents_spoken_to
@@ -168,21 +180,18 @@ def make_csat_demo_data(n_rows: int = 500, random_state: int = 0) -> pd.DataFram
         None,
     )
 
-    resolved_logit = 1.5 - 0.05 * time_to_resolve - 0.1 * friction_severity - 0.15 * num_escalations
+    resolved_logit = 1.5 - 0.05 * time_to_resolve - 0.08 * num_transfers - 0.15 * num_escalations
     resolved_prob = 1.0 / (1.0 + np.exp(-resolved_logit))
     resolved = rng.binomial(1, resolved_prob)
 
-    repeat_contact_logit = -0.5 - 1.5 * resolved + 0.15 * friction_severity
-    repeat_contact_prob = 1.0 / (1.0 + np.exp(-repeat_contact_logit))
-    repeat_contact = rng.binomial(1, repeat_contact_prob)
-
     csat = np.clip(
         8.0
-        - 0.4 * friction_severity
-        - 0.1 * time_to_resolve
-        + 1.5 * resolved
+        - 0.02 * (age - 45)
+        - 0.05 * time_to_respond
         - 1.0 * repeat_contact
-        + 0.02 * (age - 45)
+        - 0.1 * time_to_resolve
+        - 0.15 * num_agents_spoken_to
+        + 1.5 * resolved
         + rng.normal(0, 1, size=n_rows),
         0.0,
         10.0,
