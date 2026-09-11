@@ -739,6 +739,29 @@ function wireTopbar() {
 }
 
 
+// -- left-panel tabs --------------------------------------------------------------
+//
+// Workshop / Causal model / Causal impact. The canvas (#canvas-wrap) lives
+// outside #left-panel entirely, so it stays visible and its nodes/edges
+// stay clickable no matter which tab is active -- nothing here touches it.
+
+function activateTab(name) {
+  for (const btn of document.querySelectorAll(".tab-btn")) {
+    const isActive = btn.dataset.tab === name;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-selected", isActive ? "true" : "false");
+  }
+  for (const panel of document.querySelectorAll(".tab-panel")) {
+    panel.classList.toggle("hidden", panel.id !== `tab-${name}`);
+  }
+}
+
+function wireTabs() {
+  for (const btn of document.querySelectorAll(".tab-btn")) {
+    btn.addEventListener("click", () => activateTab(btn.dataset.tab));
+  }
+}
+
 // -- causal attribution panel (SCOPE.md build order step 6) -----------------------
 
 function formatFalsifyBool(value) {
@@ -891,6 +914,12 @@ async function buildCausalModel() {
     const preferredDefault = graph.outcomes[0] || result.attributable_nodes[0];
     populateCausalTargetSelect(result.attributable_nodes, preferredDefault);
     causalAttributeControls.classList.remove("hidden");
+    // Switch to the "Causal impact" tab so the auto-run attribution
+    // below lands somewhere visible: the build button lives on the
+    // "Causal model" tab, but its result (once tabs split the panel)
+    // would otherwise render into a hidden tab, silently reintroducing
+    // the second click this auto-run was built to avoid.
+    activateTab("causal-impact");
     if (causalTargetSelect.value) {
       await attributeCausalTarget(causalTargetSelect.value);
     }
@@ -923,6 +952,7 @@ async function init() {
     const eh = initCytoscape(graph);
     wireTopbar();
     wireCausalPanel();
+    wireTabs();
     // Exposed for the Playwright smoke test (test_frontend_smoke.py) and
     // for manual debugging in the browser console -- not used by app.js
     // itself, which keeps `cy` as a plain module-level variable above.

@@ -31,6 +31,11 @@ the Build button, the falsification/sign-disagreement
 summary, the target-node picker, the ranked contribution table, and
 the row-click reuse of this same plot modal. Same bridge limitation as
 above -- validated by static reading only here, real signal from CI.
+
+`test_left_panel_tabs` covers the Workshop/Causal model/Causal impact
+tab split of `#left-panel`: clicking a tab shows only that tab's panel,
+and the canvas (which lives outside `#left-panel`) stays visible and
+its nodes stay clickable regardless of which tab is active.
 """
 
 from __future__ import annotations
@@ -294,6 +299,9 @@ def test_causal_build_and_attribute_panel(live_server, page):
 
     assert "hidden" in (page.get_attribute("#causal-attribute-controls", "class") or "")
 
+    # The build button lives on the "Causal model" tab, hidden by
+    # default (the "Workshop" tab is active on load).
+    page.click('[data-tab="causal-model"]')
     page.click("#btn-causal-build")
 
     # Falsification result and (in this fixture, edge-less-until-now
@@ -302,8 +310,12 @@ def test_causal_build_and_attribute_panel(live_server, page):
     page.wait_for_selector("#causal-build-result:not(.hidden)")
     page.wait_for_selector(".causal-falsify-summary")
 
-    # The build panel auto-runs attribution for the default target
-    # (the designated outcome, "outcome") once it completes.
+    # Building auto-switches to the "Causal impact" tab so the auto-run
+    # attribution below (for the default target, the designated
+    # outcome "outcome") lands somewhere visible without a second click.
+    page.wait_for_selector("#tab-causal-impact:not(.hidden)")
+    assert "active" in page.get_attribute('[data-tab="causal-impact"]', "class")
+
     page.wait_for_selector("#causal-contribution-container table.rank-table tbody tr")
     rows = page.query_selector_all("#causal-contribution-container table.rank-table tbody tr")
     assert len(rows) >= 1
@@ -331,3 +343,67 @@ def test_causal_build_and_attribute_panel(live_server, page):
     page.wait_for_selector("#plot-modal-body .js-plotly-plot")
 
     assert console_errors == [], f"console errors in causal panel: {console_errors}"
+
+
+def test_left_panel_tabs(live_server, page):
+    """Workshop is active on load; clicking a tab shows only that tab's
+    panel and hides the others. The canvas lives outside #left-panel, so
+    a node stays visible and clickable no matter which tab is active --
+    checked here via a plain drag on the "Causal model" tab, mirroring
+    the plain-drag half of test_shift_drag_creates_edge.
+    """
+    console_errors: list[str] = []
+    page.on("console", lambda msg: msg.type == "error" and console_errors.append(msg.text))
+    page.on("pageerror", lambda exc: console_errors.append(str(exc)))
+
+    page.goto(live_server)
+    page.wait_for_selector("#cy canvas")
+
+    assert "active" in page.get_attribute('[data-tab="workshop"]', "class")
+    assert "hidden" not in (page.get_attribute("#tab-workshop", "class") or "")
+    assert "hidden" in (page.get_attribute("#tab-causal-model", "class") or "")
+    assert "hidden" in (page.get_attribute("#tab-causal-impact", "class") or "")
+
+    page.click('[data-tab="causal-model"]')
+    assert "active" in page.get_attribute('[data-tab="causal-model"]', "class")
+    assert "active" not in page.get_attribute('[data-tab="workshop"]', "class")
+    assert "hidden" in (page.get_attribute("#tab-workshop", "class") or "")
+    assert "hidden" not in (page.get_attribute("#tab-causal-model", "class") or "")
+    page.wait_for_selector("#btn-causal-build")
+
+    # Canvas node stays visible and draggable while a non-Workshop tab
+    # is active -- #canvas-wrap is a sibling of #left-panel, untouched
+    # by the tab switch above.
+    node_ids = page.evaluate("() => window.__dagshop.cy.nodes().map((n) => n.id())")
+    assert len(node_ids) >= 1
+    node_id = node_ids[0]
+    before = page.evaluate("(id) => window.__dagshop.cy.getElementById(id).position()", node_id)
+    center = page.evaluate(
+        "(id) => { "
+        "const n = window.__dagshop.cy.getElementById(id); "
+        "const p = n.renderedPosition(); "
+        "const rect = document.getElementById('cy').getBoundingClientRect(); "
+        "return { x: rect.left + p.x, y: rect.top + p.y }; "
+        "}",
+        node_id,
+    )
+    page.mouse.move(center["x"], center["y"])
+    page.mouse.down()
+    page.mouse.move(center["x"] + 30, center["y"] + 30, steps=5)
+    page.mouse.up()
+    after = page.evaluate("(id) => window.__dagshop.cy.getElementById(id).position()", node_id)
+    assert (after["x"], after["y"]) != (before["x"], before["y"])
+
+    page.click('[data-tab="causal-impact"]')
+    assert "active" in page.get_attribute('[data-tab="causal-impact"]', "class")
+    assert "hidden" in (page.get_attribute("#tab-causal-model", "class") or "")
+    assert "hidden" not in (page.get_attribute("#tab-causal-impact", "class") or "")
+    page.wait_for_selector("#causal-contribution-container")
+
+    page.click('[data-tab="workshop"]')
+    assert "active" in page.get_attribute('[data-tab="workshop"]', "class")
+    assert "hidden" not in (page.get_attribute("#tab-workshop", "class") or "")
+    assert "hidden" in (page.get_attribute("#tab-causal-model", "class") or "")
+    assert "hidden" in (page.get_attribute("#tab-causal-impact", "class") or "")
+
+    assert console_errors == [], f"console errors switching tabs: {console_errors}"
