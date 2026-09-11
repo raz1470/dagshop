@@ -41,10 +41,13 @@ from dagshop.associate import ColumnTypeError
 from dagshop.causal_model import (
     AttributionResult,
     FalsifyResult,
+    MechanismPerformance,
+    ModelEvaluation,
     SignDisagreement,
     _n_jobs_override,
     _sign_disagreements,
     attribute_target,
+    evaluate_causal_model,
     falsify_causal_graph,
     fit_causal_model,
 )
@@ -384,6 +387,59 @@ def test_falsify_causal_graph_returns_result_with_report() -> None:
     # actual booleans.
     assert result.falsified in (True, False)
     assert result.falsifiable in (True, False)
+
+
+# -- evaluate_causal_model -------------------------------------------------------
+
+
+def test_evaluate_causal_model_returns_result_with_report() -> None:
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    result = evaluate_causal_model(fitted, data, n_jobs=1)
+    assert isinstance(result, ModelEvaluation)
+    assert isinstance(result.report, str)
+    assert len(result.report) > 0
+    assert isinstance(result.overall_kl_divergence, float)
+    assert result.graph_falsification.significance_level == 0.05
+    assert result.graph_falsification.falsified in (True, False)
+
+
+def test_evaluate_causal_model_root_node_gets_kl_divergence_not_r2() -> None:
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    result = evaluate_causal_model(fitted, data, n_jobs=1)
+    root_performance = result.mechanism_performances["root"]
+    assert isinstance(root_performance, MechanismPerformance)
+    assert root_performance.is_root is True
+    assert root_performance.kl_divergence is not None
+    assert root_performance.r2 is None
+    assert root_performance.mse is None
+    assert root_performance.nmse is None
+
+
+def test_evaluate_causal_model_non_root_node_gets_r2_not_kl_divergence() -> None:
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    result = evaluate_causal_model(fitted, data, n_jobs=1)
+    target_performance = result.mechanism_performances["target"]
+    assert target_performance.is_root is False
+    assert target_performance.kl_divergence is None
+    assert target_performance.r2 is not None
+    assert target_performance.mse is not None
+    assert target_performance.nmse is not None
+    assert target_performance.crps is not None
+
+
+def test_evaluate_causal_model_significance_level_overrides_dowhy_default() -> None:
+    """dowhy's own EvaluateCausalModelConfig defaults
+    falsify_graph_significance_level to 0.2; this module's wrapper
+    defaults to 0.05 instead, matching falsify_causal_graph's own
+    default (see module docstring).
+    """
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    result = evaluate_causal_model(fitted, data, significance_level=0.01, n_jobs=1)
+    assert result.graph_falsification.significance_level == 0.01
 
 
 # -- end-to-end smoke test against the real CSAT scenario -----------------------
