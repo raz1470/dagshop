@@ -914,12 +914,17 @@ async function buildCausalModel() {
     const preferredDefault = graph.outcomes[0] || result.attributable_nodes[0];
     populateCausalTargetSelect(result.attributable_nodes, preferredDefault);
     causalAttributeControls.classList.remove("hidden");
-    // Switch to the "Causal impact" tab so the auto-run attribution
-    // below lands somewhere visible: the build button lives on the
-    // "Causal model" tab, but its result (once tabs split the panel)
-    // would otherwise render into a hidden tab, silently reintroducing
-    // the second click this auto-run was built to avoid.
-    activateTab("causal-impact");
+    // Deliberately does not switch tabs here. The falsification result
+    // just rendered above lives on the "Causal model" tab (where the
+    // user already is, having just clicked Build), and auto-switching
+    // away from it would hide that result immediately -- it briefly
+    // did, until CI caught it: renderCausalBuildResult's output was
+    // never actually visible on screen once this call followed it
+    // synchronously. The auto-run attribution below still runs and
+    // populates the "Causal impact" tab in the background, so it's
+    // ready as soon as the user clicks over there -- one click, not
+    // the two a cold "Show drivers" click would need, and unlike the
+    // pre-tabs version this doesn't fight the user's own tab choice.
     if (causalTargetSelect.value) {
       await attributeCausalTarget(causalTargetSelect.value);
     }

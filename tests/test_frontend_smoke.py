@@ -306,16 +306,16 @@ def test_causal_build_and_attribute_panel(live_server, page):
 
     # Falsification result and (in this fixture, edge-less-until-now
     # DAG so genuinely) empty sign-disagreements section render as soon
-    # as the build responds.
+    # as the build responds, on the same "Causal model" tab the user
+    # is already looking at (no tab switch on build -- see app.js's
+    # buildCausalModel comment for why one was tried and reverted).
     page.wait_for_selector("#causal-build-result:not(.hidden)")
     page.wait_for_selector(".causal-falsify-summary")
 
-    # Building auto-switches to the "Causal impact" tab so the auto-run
-    # attribution below (for the default target, the designated
-    # outcome "outcome") lands somewhere visible without a second click.
-    page.wait_for_selector("#tab-causal-impact:not(.hidden)")
-    assert "active" in page.get_attribute('[data-tab="causal-impact"]', "class")
-
+    # The build auto-runs attribution for the default target (the
+    # designated outcome, "outcome") in the background; its result
+    # renders on the "Causal impact" tab, one click away.
+    page.click('[data-tab="causal-impact"]')
     page.wait_for_selector("#causal-contribution-container table.rank-table tbody tr")
     rows = page.query_selector_all("#causal-contribution-container table.rank-table tbody tr")
     assert len(rows) >= 1
@@ -398,7 +398,12 @@ def test_left_panel_tabs(live_server, page):
     assert "active" in page.get_attribute('[data-tab="causal-impact"]', "class")
     assert "hidden" in (page.get_attribute("#tab-causal-model", "class") or "")
     assert "hidden" not in (page.get_attribute("#tab-causal-impact", "class") or "")
-    page.wait_for_selector("#causal-contribution-container")
+    # state="attached" rather than the default "visible": this test never
+    # triggers a build, so the container is genuinely empty here (no
+    # text, zero height) even though its tab is showing -- an empty
+    # element with a zero-size box never satisfies Playwright's default
+    # visible wait, regardless of display/hidden state.
+    page.wait_for_selector("#causal-contribution-container", state="attached")
 
     page.click('[data-tab="workshop"]')
     assert "active" in page.get_attribute('[data-tab="workshop"]', "class")
