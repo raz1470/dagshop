@@ -206,6 +206,36 @@ Judgment calls made in this module, not directed by SCOPE.md
   fields `FalsifyResult` already exposes would be pure duplication now
   that there is nothing else for such a wrapper to add (see SCOPE.md's
   Decided section on retiring `FalsifyResult`).
+- **`build_node_plots` uses one joint train/test split shared across
+  every node, not a per-node split the way `associate.py` does.**
+  Matches `fit_causal_model`'s own joint (not per-node) `dropna`: every
+  node here is part of one shared model over the same rows, so "held
+  out" has to mean the same held-out rows for every node. The
+  trade-off: a single joint split can't be stratified per node the way
+  `associate.py`'s per-pair splits are, so a binary-coded node's test
+  fold can (rarely, at this repo's demo-data scale) land only one
+  class -- `ActualVsPredictedPlot.auc` is `None` in that case rather
+  than raising, same "degenerate split -> skip, don't crash" instinct
+  `associate.py._prepare_pair` already applies to its own per-pair
+  splits.
+- **`_node_prediction_model` is factored out of `fit_causal_model`'s
+  own mechanism-construction loop, shared with `build_node_plots`.**
+  Both need the exact same `HistGradientBoostingRegressor`/
+  `monotonic_cst` construction -- `fit_causal_model` wraps it in
+  `gcm.AdditiveNoiseModel` for the real fit, `build_node_plots` fits it
+  directly (no `gcm` wrapping) against a train-only split, since it
+  only needs point predictions, not causal sampling. Sharing this one
+  function keeps the two from silently drifting apart on a detail this
+  module already treats as easy to get subtly wrong (see the
+  alphabetical-parent-order note above).
+- **`ActualVsPredictedPlot`/`ObservedVsSampledPlot` carry no `kind`
+  discriminant field.** A future `GET /api/causal/plot/{node}`
+  endpoint (SCOPE.md build order step 5) returns one or the other
+  depending on whether `node` is a root; matches this repo's existing
+  pattern of letting response shape itself say what it is
+  (`associate.py`'s `PairPlotData` vs `SkippedPair` has no discriminant
+  either) rather than adding one pre-emptively. Worth revisiting in
+  step 5 if the frontend finds branching on field presence awkward.
 """
 
 from __future__ import annotations
@@ -215,6 +245,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import networkx as nx
 import numpy as np
 import pandas as pd
 from dowhy import gcm
@@ -224,6 +255,8 @@ from dowhy.gcm.model_evaluation import EvaluateCausalModelConfig
 from dowhy.graph import get_ordered_predecessors
 from scipy.stats import norm, spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import train_test_split
 
 from dagshop.associate import ColumnTypeError
 from dagshop.graph import DAGModel, Sign
@@ -399,6 +432,53 @@ class ModelEvaluation:
     report: str
 
 
+@dataclass(frozen=True)
+class ActualVsPredictedPlot:
+    """Held-out actual-vs-predicted plot data for one non-root node.
+
+    `actual`/`predicted` are the test-fold's real target values and
+    this node's own regressor's prediction for each row, same order --
+    paired for a scatter against a y=x reference line (SCOPE.md's
+    Decided section: a new plot type, not a reuse of `associate.py`'s
+    `PairPlotData`, since a node can have more than one parent).
+
+    `auc` is `roc_auc_score(actual, predicted)` -- the regressor's raw
+    continuous output fed directly as the score, no thresholding, no
+    probability calibration (matching the "every node is a regressor"
+    decision, see module docstring). Populated only for a binary-coded
+    (0/1 numeric, exactly 2 distinct values) node whose test fold
+    actually landed both classes; `None` for a continuous node, or for
+    a binary one where it didn't (see `build_node_plots`'s docstring:
+    one joint split, not stratified per node).
+    """
+
+    node: str
+    actual: list[float]
+    predicted: list[float]
+    auc: float | None
+
+
+@dataclass(frozen=True)
+class ObservedVsSampledPlot:
+    """Observed-vs-sampled plot data for one root node's fitted noise distribution.
+
+    `observed` is this node's own (joint-`dropna`'d) column. `sampled`
+    is a fresh draw of the same size from `FittedCausalModel.scm`'s
+    already-fitted noise distribution for this node
+    (`gcm.EmpiricalDistribution` or `gcm.ScipyDistribution`, whichever
+    `noise_models` picked -- see `fit_causal_model`). The two are NOT
+    row-aligned: a root node's noise distribution is unconditional, so
+    there is no per-row "prediction" to pair against, only two
+    independent samples that should look like the same distribution if
+    the noise choice fits well (SCOPE.md's Decided section: this
+    doubles as a sanity check on the noise dropdown's choice).
+    """
+
+    node: str
+    observed: list[float]
+    sampled: list[float]
+
+
 @dataclass
 class FittedCausalModel:
     """A `gcm.StructuralCausalModel` fitted against `dag`/`data`, plus diagnostics."""
@@ -406,6 +486,37 @@ class FittedCausalModel:
     scm: gcm.StructuralCausalModel
     dag: DAGModel
     sign_disagreements: list[SignDisagreement]
+
+
+def _node_prediction_model(
+    graph: nx.DiGraph, node: str, parents: list[str], random_state: int
+) -> HistGradientBoostingRegressor:
+    """Build one non-root node's regressor: `HistGradientBoostingRegressor`
+    with `monotonic_cst` built from `graph`'s own asserted edge signs, in
+    `parents`' order (already `dowhy`-ordered by the caller -- see
+    `fit_causal_model`'s docstring for why order matters here).
+
+    Reads sign directly off `graph`'s edge data (`graph.edges[parent,
+    node]["sign"]`), not `DAGModel.sign(...)`, so this gives the same
+    answer whether `graph` is a live `DAGModel.graph` (as in
+    `fit_causal_model`) or an already-fitted `FittedCausalModel.scm.graph`
+    that the original `DAGModel` may have since diverged from (as in
+    `build_node_plots` -- this repo does not auto-invalidate a build's
+    cache on a later graph edit, see server.py's module docstring and
+    this module's own `_validate_noise_models` note).
+
+    Shared by `fit_causal_model` (wrapped in `gcm.AdditiveNoiseModel`,
+    fit against the whole SCM) and `build_node_plots` (fit directly, no
+    `gcm` wrapping, against a train-only split -- see that function's
+    docstring for why it needs its own separate fit rather than reusing
+    the SCM's already-fitted mechanism).
+    """
+    monotonic_cst = [1 if graph.edges[parent, node]["sign"] == "+" else -1 for parent in parents]
+    return HistGradientBoostingRegressor(
+        monotonic_cst=monotonic_cst,
+        categorical_features="from_dtype",
+        random_state=random_state,
+    )
 
 
 def fit_causal_model(
@@ -459,12 +570,7 @@ def fit_causal_model(
             choice: NoiseModel = (noise_models or {}).get(node, "empirical")
             scm.set_causal_mechanism(node, _ROOT_NOISE_FACTORIES[choice]())
             continue
-        monotonic_cst = [1 if dag.sign(parent, node) == "+" else -1 for parent in parents]
-        prediction_model = HistGradientBoostingRegressor(
-            monotonic_cst=monotonic_cst,
-            categorical_features="from_dtype",
-            random_state=random_state,
-        )
+        prediction_model = _node_prediction_model(graph_copy, node, parents, random_state)
         scm.set_causal_mechanism(
             node, gcm.AdditiveNoiseModel(gcm.ml.SklearnRegressionModel(prediction_model))
         )
@@ -646,6 +752,102 @@ def evaluate_causal_model(
         graph_falsification=raw.graph_falsification,
         report=report,
     )
+
+
+def build_node_plots(
+    fitted: FittedCausalModel,
+    data: pd.DataFrame,
+    *,
+    test_size: float = 0.2,
+    random_state: int = 0,
+) -> dict[str, ActualVsPredictedPlot | ObservedVsSampledPlot]:
+    """Build the actual-vs-predicted-popup plot data for every node.
+
+    SCOPE.md build order step 4: one joint train/test split of
+    `data[fitted.dag.nodes].dropna()` (same `test_size`/`random_state`
+    convention as `associate.py`, single split, not k-fold -- one split
+    shared across every node, matching `fit_causal_model`'s own joint
+    (not per-node) `dropna`, rather than `associate.py`'s per-pair
+    splits: every node's mechanism here is part of one shared model over
+    the same rows, so "held out" has to mean the same held-out rows for
+    every node, not a different split per node).
+
+    For a non-root node, this refits a *fresh* regressor on the train
+    fold only (`_node_prediction_model`, same construction
+    `fit_causal_model` uses) and predicts on the test fold --
+    deliberately not reusing `fitted.scm`'s already-fitted mechanism
+    (which was fit on all rows): scoring a model against rows it was
+    already fit on would be in-sample, exactly what SCOPE.md's Decided
+    section rejected for this feature. This is a different (single-
+    split) held-out estimate than `evaluate_causal_model`'s own 5-fold
+    CV numbers (step 3) -- SCOPE.md's Decided section accepts the two
+    looking slightly inconsistent for the same node rather than
+    discarding the better k-fold estimate to force them to match.
+
+    A root node gets no split-based number at all: `evaluate_causal_
+    model`'s `kl_divergence` (step 3) already covers it. Its plot data
+    is an `ObservedVsSampledPlot` instead, reusing `fitted.scm`'s
+    already-fitted noise distribution directly (no train/test split --
+    a root node's distribution is unconditional, so there is nothing
+    to hold rows out *from*).
+
+    Node set and per-node parents/signs are read from `fitted.dag.nodes`
+    and `fitted.scm.graph` respectively, not re-derived from `data` --
+    same precedent `attribute_target`/`falsify_causal_graph` already
+    follow, so this reflects what was actually fit even if `fitted.dag`
+    has since been edited (this repo does not auto-invalidate a build's
+    cache on a later graph edit).
+    """
+    eval_data = data[fitted.dag.nodes].dropna()
+    train_data, test_data = train_test_split(
+        eval_data, test_size=test_size, random_state=random_state
+    )
+
+    plots: dict[str, ActualVsPredictedPlot | ObservedVsSampledPlot] = {}
+    for node in fitted.dag.nodes:
+        parents = get_ordered_predecessors(fitted.scm.graph, node)
+        if not parents:
+            mechanism = fitted.scm.causal_mechanism(node)
+            observed = eval_data[node].to_numpy(dtype=float)
+            sampled = np.asarray(mechanism.draw_samples(len(observed)), dtype=float).reshape(-1)
+            plots[node] = ObservedVsSampledPlot(
+                node=node,
+                observed=observed.tolist(),
+                sampled=sampled.tolist(),
+            )
+            continue
+
+        x_train = train_data[parents].to_numpy(dtype=float)
+        y_train = train_data[node].to_numpy(dtype=float)
+        x_test = test_data[parents].to_numpy(dtype=float)
+        y_test = test_data[node].to_numpy(dtype=float)
+
+        regressor = _node_prediction_model(fitted.scm.graph, node, parents, random_state)
+        regressor.fit(x_train, y_train)
+        y_pred = regressor.predict(x_test)
+
+        auc = None
+        if _is_binary_coded(eval_data[node]) and len(set(y_test)) == 2:
+            auc = float(roc_auc_score(y_test, y_pred))
+
+        plots[node] = ActualVsPredictedPlot(
+            node=node,
+            actual=y_test.tolist(),
+            predicted=y_pred.tolist(),
+            auc=auc,
+        )
+
+    return plots
+
+
+def _is_binary_coded(series: pd.Series) -> bool:
+    """Same binary detection `associate.py`'s `_target_kind` uses
+    (`nunique() == 2` after dropping missing values). Redefined here
+    rather than imported, same reason `_NUMERIC_DTYPE_KINDS` is
+    redefined above: it's module-private there, and the two modules
+    just happen to want an identical check, not a shared one.
+    """
+    return series.dropna().nunique() == 2
 
 
 def _validate_noise_models(dag: DAGModel, noise_models: dict[str, NoiseModel] | None) -> None:
