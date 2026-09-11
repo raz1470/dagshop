@@ -32,11 +32,12 @@ dagshop launch data.csv --treatment treatment_col --outcome outcome_col
 `data.csv` must contain only continuous or binary numeric columns — no
 categoricals in v1. `--treatment`/`--outcome` are optional and
 repeatable (`--treatment X --treatment Y`); designating at least one of
-either scopes the pre-work association scan to "what's associated with
-treatment(s), what's associated with outcome(s), and how do the
-remaining covariates associate with each other," which is much faster
-than a full pairwise scan at 50+ variables. Leave both off for a fully
-exploratory session — every column gets scanned against every other.
+either splits the pre-work association scan into three labeled
+tables — "associated with treatment(s)", "associated with outcome(s)",
+and "between the remaining covariates" — instead of one. It runs the
+same number of pairwise fits either way (`n * (n - 1)`); the payoff is
+organizational, not speed. Leave both off for a fully exploratory
+session — every column gets scanned against every other, in one table.
 
 Other flags worth knowing about:
 
@@ -48,6 +49,10 @@ Other flags worth knowing about:
   pair, seed, points per prediction curve). Defaults are meant to be
   reasonable at 50+ variables and/or 100k+ rows; lower `--max-rows` if
   a session with a lot of columns feels slow to start.
+- `--strong-r2`, `--strong-auc` — an association ranks as "strong"
+  above these thresholds (defaults: R^2 > 0.01, ROC AUC > 0.55) in the
+  ranking tables below. Nothing is hidden either way — everything else
+  just shows in the same table's "weak" section instead.
 - `--host`, `--port`, `--no-browser` — server binding and whether to
   auto-open a browser tab.
 
@@ -60,20 +65,31 @@ dagshop generate-demo-data
 ```
 
 Writes a synthetic CSV with a known causal structure to `inputs/demo.csv`
-by default (pass a path to write elsewhere). The generated columns:
+by default (pass a path to write elsewhere). `--scenario` picks which
+structure (default: `confounder`):
 
-- `age`, `prior_engagement` — confounders, mutually independent
-- `treatment` (binary) — depends on both confounders
-- `mediator` — depends on `treatment`
-- `outcome` — depends on `treatment`, `mediator`, and both confounders
-- `unrelated_score`, `unrelated_flag` (binary) — pure noise, connected
-  to nothing
+- **`confounder`** — a small DAG: `age`/`prior_engagement`
+  (confounders, mutually independent) and `treatment` (binary, caused
+  by both) feed `mediator` and `outcome`; `unrelated_score`/
+  `unrelated_flag` (binary) are pure noise connected to nothing. Try
+  it:
 
-Then try the workshop against it:
+  ```bash
+  dagshop launch inputs/demo.csv --treatment treatment --outcome outcome
+  ```
 
-```bash
-dagshop launch inputs/demo.csv --treatment treatment --outcome outcome
-```
+- **`csat`** — a larger, multi-hop customer-service operations DAG:
+  nine drivers feeding a `csat` target, three of which reach it only
+  through intermediate nodes rather than directly. Built for the causal
+  attribution feature below, where a ranking of direct parents alone
+  would miss those three entirely — see `dagshop.demo_data`'s module
+  docstring for the exact structure and the expected driver ranking.
+  Try it:
+
+  ```bash
+  dagshop generate-demo-data --scenario csat
+  dagshop launch inputs/demo.csv --outcome csat
+  ```
 
 `--n-rows`/`--random-state` control size and reproducibility;
 `--force` overwrites an existing output path.
@@ -94,11 +110,18 @@ first or type a full path into the prompt.
 
 ## The workshop
 
-Once `launch` is running and your browser opens:
+Once `launch` is running and your browser opens, the left panel is
+split into three tabs. The canvas on the right is outside all three —
+it stays visible and its nodes stay clickable no matter which tab is
+active.
 
-- The left panel shows the association ranking table(s) from the
-  pre-work scan. Click a row to open a scatter + model-prediction plot
-  for that pair.
+### Workshop tab (default)
+
+- The association ranking table(s) from the pre-work scan, each split
+  into a "strong" and a "weak" section (`--strong-r2`/`--strong-auc`
+  above). Nothing is hidden — every pair still shows, the split is
+  just where to look first. Click a row to open a scatter +
+  model-prediction plot for that pair.
 - The canvas holds one node per column. If you designated
   treatment(s)/outcome(s), those nodes are pinned in fixed columns and
   distinctly colored; everything else starts scattered — drag to
@@ -115,19 +138,53 @@ Once `launch` is running and your browser opens:
   a session so you can pick a workshop back up later (`dagshop launch
   data.csv --session outputs/dagshop_session.json`).
 
+### Causal model tab
+
+"Build causal model" fits a `dowhy.gcm.StructuralCausalModel` against
+the DAG as currently drawn (your nodes and signed edges) and runs
+`falsify_graph` against it, right inside the workshop — no need to
+export first and run the "From DAG to causal analysis" code below
+yourself. The result shows whether the graph was falsified, plus
+the full refutation report. An asserted edge sign is never rejected
+over this: it still gets hard-enforced on the fitted mechanism, but if
+an edge's raw correlation in the data disagrees with its sign by more
+than a small threshold, that edge is flagged here as worth a second
+look, not blocked.
+
+### Causal impact tab
+
+Once a model is built, pick any node as a target and click "Show
+drivers" for a table ranking every ancestor's contribution to that
+node's variance — `dowhy.gcm.intrinsic_causal_influence`, a
+Shapley-based decomposition, normalized here to a percentage share
+that sums to 100% across the table. Building auto-runs this once for
+the designated outcome, so there's usually already something to see on
+this tab. Row click reuses the same plot modal as the association
+tables.
+
+---
+
 The exported JSON/GraphML is meant to be loaded straight into your own
 `dowhy.gcm.ProbabilisticCausalModel`/`StructuralCausalModel`, with
 `gcm.auto.assign_causal_mechanisms(causal_model, data)` picking up
 model selection, and any treatment/outcome role tags feeding calls like
-`gcm.average_causal_effect` directly.
+`gcm.average_causal_effect` directly. The section below walks through
+that by hand; the two tabs above are DAGshop's own built-in version of
+part of the same idea (fit + falsify + intrinsic attribution), without
+leaving the workshop.
 
 ## From DAG to causal analysis with dowhy.gcm
 
 DAGshop's job stops at the exported DAG -- the analysis itself is
-`dowhy.gcm`'s. `dowhy` ships as a DAGshop dependency, so no separate
-install is needed; the examples below still run in your own script
-against the exported file, independent of the app. All four examples
-below share this setup:
+`dowhy.gcm`'s. `dowhy` ships as a DAGshop dependency (added for the
+built-in causal attribution tabs above, not just this section) --
+every package it pulls in was checked for analytics SDKs and
+phone-home behavior before use, per this project's no-telemetry
+constraint; none was found. `dowhy`'s own metadata caps Python at
+`<3.14`, which is why this repo's `.python-version` is pinned to 3.12.
+No separate install is needed either way; the examples below still run
+in your own script against the exported file, independent of the app.
+All four examples below share this setup:
 
 ```python
 import networkx as nx
