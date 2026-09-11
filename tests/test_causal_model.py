@@ -247,6 +247,33 @@ def test_attribute_target_ranks_every_ancestor_descending() -> None:
     assert by_node["mid"] > 0
 
 
+def test_attribute_target_shares_sum_to_one_including_target_row() -> None:
+    """`share` is each row's contribution as a fraction of the total
+    across the call -- should sum to ~1.0 across all rows (target's own
+    row included, per `AttributionResult`'s docstring), not just across
+    the "real driver" rows."""
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    results = attribute_target(
+        fitted,
+        "target",
+        n_jobs=1,
+        num_training_samples=200,
+        num_samples_randomization=20,
+        num_samples_baseline=20,
+        random_state=0,
+    )
+    assert {r.node for r in results} == {"root", "mid", "target"}
+    assert sum(r.share for r in results) == pytest.approx(1.0)
+    by_node = {r.node: r.share for r in results}
+    # root/mid are genuine drivers; target's own row is its residual
+    # noise, not a driver, but still gets a (small, non-negative) share
+    # rather than being excluded from the total.
+    assert by_node["root"] > 0
+    assert by_node["mid"] > 0
+    assert by_node["target"] >= 0
+
+
 def test_attribute_target_random_state_is_reproducible() -> None:
     """Regression test for the flaky-CI fix above: two calls with the
     same `random_state` (and `n_jobs=1`, so there's no worker race over

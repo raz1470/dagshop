@@ -170,7 +170,42 @@ button {
 }
 
 .rank-table .score-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rank-table .score-text {
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rank-table .score-bar-track {
+  display: inline-block;
+  width: 48px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-border);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.rank-table .score-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--color-treatment);
+  border-radius: 3px;
+}
+
+.rank-table .weak-divider th {
+  text-align: left;
+  padding: 8px 6px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
 }
 
 #skipped-container {

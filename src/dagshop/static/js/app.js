@@ -116,6 +116,45 @@ function formatScore(row) {
   return `${row.score.toFixed(3)} (${label})`;
 }
 
+// Bar length as a fraction of each metric's own useful range, not raw
+// score: ROC AUC's "no skill" floor sits at 0.5 (a bar scaled from 0
+// would make every real association look nearly full), while R2's
+// useful range already starts near 0. Clamped to [0, 1] since a
+// negative R2 or a below-floor AUC is a real (if unstrong) result, not
+// a rendering error.
+function scoreBarFraction(row) {
+  const raw = row.score_name === "roc_auc" ? (row.score - 0.5) / 0.5 : row.score;
+  return Math.max(0, Math.min(1, raw));
+}
+
+function scoreCellHtml(row) {
+  const pct = (scoreBarFraction(row) * 100).toFixed(1);
+  return `
+    <div class="score-cell">
+      <span class="score-bar-track"><span class="score-bar-fill" style="width: ${pct}%"></span></span>
+      <span class="score-text">${formatScore(row)}</span>
+    </div>
+  `;
+}
+
+function buildTableRow(row) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td>${escapeHtml(row.predictor)}</td>
+    <td>${escapeHtml(row.target)}</td>
+    <td>${scoreCellHtml(row)}</td>
+    <td>${row.n_used}</td>
+  `;
+  tr.addEventListener("click", () => openPlot(row.predictor, row.target));
+  return tr;
+}
+
+// Splits into a "strong"/"weak" section by row.is_strong (see
+// associate.py's PairResult docstring) rather than filtering anything
+// out -- every row still renders, sorted exactly as the scan returned
+// it. The divider only appears when the table actually mixes both, so
+// an all-strong or all-weak table renders as one plain block like
+// before this feature existed.
 function buildTable(title, rows) {
   const table = document.createElement("table");
   table.className = "rank-table";
@@ -127,17 +166,21 @@ function buildTable(title, rows) {
   thead.innerHTML = "<tr><th>Predictor</th><th>Target</th><th>Score</th><th>n</th></tr>";
   table.appendChild(thead);
 
+  const strong = rows.filter((row) => row.is_strong);
+  const weak = rows.filter((row) => !row.is_strong);
+
   const tbody = document.createElement("tbody");
-  for (const row of rows) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${escapeHtml(row.predictor)}</td>
-      <td>${escapeHtml(row.target)}</td>
-      <td class="score-cell">${formatScore(row)}</td>
-      <td>${row.n_used}</td>
-    `;
-    tr.addEventListener("click", () => openPlot(row.predictor, row.target));
-    tbody.appendChild(tr);
+  for (const row of strong) {
+    tbody.appendChild(buildTableRow(row));
+  }
+  if (strong.length > 0 && weak.length > 0) {
+    const divider = document.createElement("tr");
+    divider.className = "weak-divider";
+    divider.innerHTML = `<th colspan="4">Weak associations</th>`;
+    tbody.appendChild(divider);
+  }
+  for (const row of weak) {
+    tbody.appendChild(buildTableRow(row));
   }
   table.appendChild(tbody);
   return table;
@@ -760,6 +803,28 @@ function populateCausalTargetSelect(nodes, preferredDefault) {
   }
 }
 
+// `row.share` (contribution as a fraction of the total across the whole
+// call, target's own row included -- see causal_model.py's
+// AttributionResult docstring) is already a natural 0-1 range, unlike
+// the association-table score column, so no per-metric rescaling is
+// needed here the way `scoreBarFraction` does for R2 vs ROC AUC.
+// Clamped anyway since Monte Carlo noise can occasionally push a raw
+// contribution (and so its share) very slightly negative.
+function contributionBarFraction(row) {
+  return Math.max(0, Math.min(1, row.share));
+}
+
+function contributionCellHtml(row) {
+  const pct = (row.share * 100).toFixed(1);
+  const barPct = (contributionBarFraction(row) * 100).toFixed(1);
+  return `
+    <div class="score-cell">
+      <span class="score-bar-track"><span class="score-bar-fill" style="width: ${barPct}%"></span></span>
+      <span class="score-text">${pct}%</span>
+    </div>
+  `;
+}
+
 function buildContributionTable(targetNode, rows) {
   const table = document.createElement("table");
   table.className = "rank-table";
@@ -768,15 +833,21 @@ function buildContributionTable(targetNode, rows) {
   table.appendChild(caption);
 
   const thead = document.createElement("thead");
-  thead.innerHTML = "<tr><th>Node</th><th>Contribution</th></tr>";
+  thead.innerHTML = "<tr><th>Node</th><th>Share</th></tr>";
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
   for (const row of rows) {
     const tr = document.createElement("tr");
+    // The target node's own row is its residual/unexplained variance,
+    // not a driver of itself (see AttributionResult's docstring for why
+    // the API still returns it rather than excluding it from the sum)
+    // -- relabeled to "Other" for display only, row.node stays the real
+    // name for the click handler below.
+    const displayName = row.node === targetNode ? "Other" : row.node;
     tr.innerHTML = `
-      <td>${escapeHtml(row.node)}</td>
-      <td class="score-cell">${row.contribution.toFixed(4)}</td>
+      <td>${escapeHtml(displayName)}</td>
+      <td>${contributionCellHtml(row)}</td>
     `;
     // Row click reuses the existing plot modal (SCOPE.md build order
     // step 6 + the "Considered and set aside" note on PDP-style curves)
