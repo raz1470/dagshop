@@ -1,12 +1,20 @@
-"""Wrap `dowhy.gcm` for fitting, refutation, and intrinsic-influence attribution.
+"""Wrap `dowhy.gcm` for fitting, model evaluation, and intrinsic-influence attribution.
 
 Builds a `gcm.StructuralCausalModel` off a `graph.DAGModel`, fits one
 mechanism per node, and exposes thin wrappers around `dowhy`'s own
-`falsify_graph` and `intrinsic_causal_influence` -- SCOPE.md's "Causal
-attribution feature" Decided section chose to wrap `dowhy.gcm` rather than
-hand-roll either, since both are real statistical machinery (conditional
-independence testing, Shapley-value variance decomposition) that is easy
-to get subtly wrong.
+`falsify_graph`/`evaluate_causal_model` and `intrinsic_causal_influence`
+-- SCOPE.md's "Causal attribution feature" Decided section chose to wrap
+`dowhy.gcm` rather than hand-roll either, since both are real statistical
+machinery (conditional independence testing, Shapley-value variance
+decomposition, k-fold mechanism scoring) that is easy to get subtly wrong.
+`evaluate_causal_model` (SCOPE.md build order step 3, "Causal model tab"
+section) is meant to eventually replace this module's standalone
+`falsify_causal_graph`/`FalsifyResult` wrapper around
+`dowhy.gcm.falsify.falsify_graph` (Decided: retire it, since
+`evaluate_causal_model` already reruns `falsify_graph` internally as part
+of the same call) -- both still coexist here for now; see the
+`falsify_causal_graph` docstring for why it hasn't actually been deleted
+yet.
 
 Pure logic, no UI dependency: testable standalone against
 `demo_data.make_csat_demo_data`, same pattern `graph.py` and `associate.py`
@@ -158,6 +166,46 @@ Judgment calls made in this module, not directed by SCOPE.md
   both already mean the same thing elsewhere in this module
   (`attribute_target`'s unknown-node `KeyError`, `_validate_columns`'s
   dtype `ColumnTypeError`).
+- **`falsify_causal_graph`/`FalsifyResult` are not actually deleted in
+  the same change that adds `evaluate_causal_model`, despite SCOPE.md's
+  Decided section calling for their retirement.** Discovered while
+  implementing build order step 3: `server.py`'s `POST
+  /api/causal/build` (step 5, not yet done) still imports and calls
+  `falsify_causal_graph` directly and serializes `FalsifyResult` into
+  its response. Deleting both now would leave `server.py` (and its
+  tests) broken between this step and step 5, for no benefit -- the
+  retirement decision stands, but the actual removal is deferred to
+  step 5, done in the same change that migrates `server.py` off it.
+- **`EvaluateCausalModelConfig`'s own `n_jobs` is resolved once, at
+  construction time, not lazily when `evaluate_causal_model` is
+  called.** `EvaluateCausalModelConfig.__init__` runs `n_jobs =
+  config.default_n_jobs if n_jobs is None else n_jobs` immediately --
+  building the config before entering `_n_jobs_override`'s `with`
+  block bakes in whatever the *unmodified* global default was, silently
+  ignoring the override (confirmed directly: reproduced the same
+  `BrokenProcessPool` the module docstring's other `n_jobs` note
+  describes, by constructing the config outside the override first).
+  `evaluate_causal_model` (this module's function) builds
+  `EvaluateCausalModelConfig` *inside* the `_n_jobs_override` block for
+  this reason, not before it.
+- **`MechanismPerformance` drops `f1` and every baseline-comparison
+  field from `dowhy`'s own `MechanismPerformanceResult`, rather than
+  keeping them as always-`None`/always-empty passthroughs.** `f1` never
+  fires for this repo's node types regardless of which function
+  computes it (session 17's finding: numeric 0/1-coded binary nodes
+  always take the `r2` branch -- see the AUC-vs-F1 note above), and the
+  baseline fields are always empty too since `evaluate_causal_model` is
+  called with its own `compare_mechanism_baselines` default (`False`,
+  not asked for in SCOPE.md). Keeping either as dead-but-present fields
+  would misrepresent them as live data the frontend might reasonably
+  render.
+- **`ModelEvaluation.graph_falsification` is `dowhy`'s own
+  `EvaluationResult` object, unwrapped, not reshaped into a
+  dagshop-specific type the way `FalsifyResult` was.** A second wrapper
+  exposing the same `falsified`/`falsifiable`/`significance_level`
+  fields `FalsifyResult` already exposes would be pure duplication now
+  that there is nothing else for such a wrapper to add (see SCOPE.md's
+  Decided section on retiring `FalsifyResult`).
 """
 
 from __future__ import annotations
@@ -171,7 +219,8 @@ import numpy as np
 import pandas as pd
 from dowhy import gcm
 from dowhy.gcm import config as gcm_config
-from dowhy.gcm.falsify import falsify_graph
+from dowhy.gcm.falsify import EvaluationResult, falsify_graph
+from dowhy.gcm.model_evaluation import EvaluateCausalModelConfig
 from dowhy.graph import get_ordered_predecessors
 from scipy.stats import norm, spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
@@ -301,6 +350,52 @@ class FalsifyResult:
     falsified: bool | None
     falsifiable: bool | None
     significance_level: float
+    report: str
+
+
+@dataclass(frozen=True)
+class MechanismPerformance:
+    """One node's per-mechanism evaluation from `dowhy.gcm.evaluate_causal_model`.
+
+    Reshaped down from `dowhy`'s own `MechanismPerformanceResult` to the
+    fields SCOPE.md's "Causal model tab" Decided section actually asks
+    for: `f1` and the baseline-model-comparison fields are dropped
+    entirely, not just left `None` (see module docstring for why).
+
+    `crps` is populated for every node. `kl_divergence` is populated
+    only for a root node (`is_root=True`); `mse`/`nmse`/`r2` only for a
+    non-root one -- the unpopulated field for a given node is `None`,
+    not omitted, so callers can branch on `is_root` rather than probing
+    which fields happen to be set.
+    """
+
+    node: str
+    is_root: bool
+    crps: float | None
+    kl_divergence: float | None
+    mse: float | None
+    nmse: float | None
+    r2: float | None
+
+
+@dataclass(frozen=True)
+class ModelEvaluation:
+    """Result of `evaluate_causal_model`, meant to eventually replace
+    `falsify_causal_graph`'s standalone call (see module docstring: not
+    yet done, `server.py` still depends on the old path).
+
+    `graph_falsification` is `dowhy`'s own `EvaluationResult` object,
+    unwrapped -- see module docstring for why this isn't reshaped into a
+    dagshop-specific type the way `FalsifyResult` was. `report` already
+    covers a plain-text summary of everything in this result (mechanism
+    performances, overall KL divergence, and the graph falsification
+    together), same pattern `FalsifyResult.report` used for the plain
+    `falsify_graph` call.
+    """
+
+    mechanism_performances: dict[str, MechanismPerformance]
+    overall_kl_divergence: float
+    graph_falsification: EvaluationResult
     report: str
 
 
@@ -469,6 +564,12 @@ def falsify_causal_graph(
     the same (copied) graph `fit_causal_model` actually fit, not `dag`
     directly. `n_jobs` is left unset (`dowhy`'s own default) unless
     given explicitly -- see module docstring.
+
+    Superseded by `evaluate_causal_model` below (SCOPE.md's "Causal
+    model tab" Decided section: retire this once `server.py` migrates
+    off it), but still called directly by `server.py`'s `POST
+    /api/causal/build` today -- not yet deleted for that reason, see
+    module docstring.
     """
     eval_data = data[fitted.dag.nodes].dropna()
     with _n_jobs_override(n_jobs):
@@ -480,6 +581,70 @@ def falsify_causal_graph(
         falsifiable=evaluation.falsifiable,
         significance_level=evaluation.significance_level,
         report=str(evaluation),
+    )
+
+
+def evaluate_causal_model(
+    fitted: FittedCausalModel,
+    data: pd.DataFrame,
+    *,
+    significance_level: float = 0.05,
+    n_jobs: int | None = None,
+) -> ModelEvaluation:
+    """Run `dowhy`'s `evaluate_causal_model` against the already-fitted SCM.
+
+    Thin wrapper around `dowhy.gcm.evaluate_causal_model`, run against
+    the same (copied, already-fitted) `fitted.scm`, not a fresh fit --
+    every non-root node's per-mechanism performance (`crps`/`mse`/
+    `nmse`/`r2`) comes from `dowhy`'s own internal 5-fold cross-
+    validation (`EvaluateCausalModelConfig.mechanism_evaluation_kfolds`,
+    left at its default of 5), re-fitting fresh copies of each node's
+    mechanism per fold -- not the single train/test split SCOPE.md's
+    Decided section describes for the AUC/actual-vs-predicted-plot work
+    (build order step 4, not this function). Root nodes get
+    `kl_divergence` instead (also via 5-fold CV, comparing the fitted
+    noise distribution's own samples against held-out actual values).
+
+    `significance_level` defaults to `0.05`, matching
+    `falsify_causal_graph`'s own default -- `dowhy`'s own
+    `EvaluateCausalModelConfig` defaults `falsify_graph_significance_level`
+    to `0.2` (see module docstring). `n_jobs` behaves like every other
+    `n_jobs` parameter in this module: left unset (`dowhy`'s own
+    default) unless given explicitly, via the same global
+    `_n_jobs_override` mechanism -- see module docstring for why
+    `EvaluateCausalModelConfig` has to be built *inside* that override,
+    not before it.
+    """
+    eval_data = data[fitted.dag.nodes].dropna()
+    with _n_jobs_override(n_jobs):
+        config = EvaluateCausalModelConfig(falsify_graph_significance_level=significance_level)
+        raw = gcm.evaluate_causal_model(fitted.scm, eval_data, config=config)
+
+    mechanism_performances = {
+        node: MechanismPerformance(
+            node=node,
+            is_root=perf.is_root,
+            crps=perf.crps,
+            kl_divergence=perf.kl_divergence,
+            mse=perf.mse,
+            nmse=perf.nmse,
+            r2=perf.r2,
+        )
+        for node, perf in raw.mechanism_performances.items()
+    }
+
+    # Must be set before `str(raw)`: `CausalModelEvaluationResult.__str__`
+    # calls `plot_evaluation_results` (matplotlib) as a side effect
+    # whenever this flag is left at its own default of `True` -- see
+    # module docstring.
+    raw.plot_falsification_histogram = False
+    report = str(raw)
+
+    return ModelEvaluation(
+        mechanism_performances=mechanism_performances,
+        overall_kl_divergence=float(raw.overall_kl_divergence),
+        graph_falsification=raw.graph_falsification,
+        report=report,
     )
 
 
