@@ -35,6 +35,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from dowhy import gcm
+from scipy.stats import norm
 
 from dagshop.associate import ColumnTypeError
 from dagshop.causal_model import (
@@ -99,6 +100,32 @@ def test_non_root_node_gets_additive_noise_model_with_regressor() -> None:
     mechanism = fitted.scm.causal_mechanism("target")
     assert isinstance(mechanism, gcm.AdditiveNoiseModel)
     assert isinstance(mechanism.prediction_model, gcm.ml.SklearnRegressionModel)
+
+
+def test_root_node_noise_override_gaussian_gets_scipy_normal_distribution() -> None:
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data, noise_models={"root": "gaussian"})
+    mechanism = fitted.scm.causal_mechanism("root")
+    assert isinstance(mechanism, gcm.ScipyDistribution)
+    assert mechanism.scipy_distribution is norm
+
+
+def test_root_node_noise_unspecified_still_defaults_to_empirical() -> None:
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data, noise_models={})
+    assert isinstance(fitted.scm.causal_mechanism("root"), gcm.EmpiricalDistribution)
+
+
+def test_noise_models_unknown_node_raises_key_error() -> None:
+    dag, data = _root_mid_target_dag_and_data()
+    with pytest.raises(KeyError):
+        _fit(dag, data, noise_models={"nope": "gaussian"})
+
+
+def test_noise_models_non_root_node_raises_value_error() -> None:
+    dag, data = _root_mid_target_dag_and_data()
+    with pytest.raises(ValueError, match="root nodes"):
+        _fit(dag, data, noise_models={"mid": "gaussian"})
 
 
 def test_monotonic_cst_follows_alphabetical_parent_order_not_insertion_order() -> None:

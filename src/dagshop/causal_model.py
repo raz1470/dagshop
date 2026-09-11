@@ -146,13 +146,26 @@ Judgment calls made in this module, not directed by SCOPE.md
   `random_state` already used for `fit_causal_model`, so a workshop
   clicking "Show drivers" twice for the same target sees a stable
   ranking rather than one that can shuffle between clicks.
+- **`noise_models` validation: unknown node is `KeyError`, a node with
+  parents is `ValueError`, not a silent no-op.** SCOPE.md's build order
+  names the parameter's shape (`dict[str, Literal["empirical",
+  "gaussian"]] | None`) but not what to do with a bad key. Silently
+  ignoring an unknown or non-root node would let a typo'd or stale
+  noise choice (e.g. after a node is renamed or a root gains a parent)
+  pass unnoticed with no effect, the same class of bug
+  `_validate_columns` already guards against for `data`'s own columns.
+  Reuses `KeyError`/`ValueError` rather than a new exception type, since
+  both already mean the same thing elsewhere in this module
+  (`attribute_target`'s unknown-node `KeyError`, `_validate_columns`'s
+  dtype `ColumnTypeError`).
 """
 
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -160,7 +173,7 @@ from dowhy import gcm
 from dowhy.gcm import config as gcm_config
 from dowhy.gcm.falsify import falsify_graph
 from dowhy.graph import get_ordered_predecessors
-from scipy.stats import spearmanr
+from scipy.stats import norm, spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
 
 from dagshop.associate import ColumnTypeError
@@ -172,6 +185,22 @@ from dagshop.graph import DAGModel, Sign
 # is module-internal there; the two modules happen to want an identical
 # check, not a shared one.
 _NUMERIC_DTYPE_KINDS = frozenset("biuf")
+
+NoiseModel = Literal["empirical", "gaussian"]
+"""Root-node noise distribution choice for `fit_causal_model`'s `noise_models`.
+
+`"empirical"` (default) resamples directly from the observed column
+(`gcm.EmpiricalDistribution`), matching today's unconditional behavior.
+`"gaussian"` fits a parametric Normal instead
+(`gcm.ScipyDistribution(scipy.stats.norm)`). See SCOPE.md's "Causal model
+tab" Decided section: per-node, not a workshop-wide default, and only
+these two options for v1 (no mixture distribution yet).
+"""
+
+_ROOT_NOISE_FACTORIES: dict[NoiseModel, Callable[[], Any]] = {
+    "empirical": gcm.EmpiricalDistribution,
+    "gaussian": lambda: gcm.ScipyDistribution(norm),
+}
 
 
 @contextlib.contextmanager
@@ -290,6 +319,7 @@ def fit_causal_model(
     *,
     random_state: int = 0,
     min_correlation: float = 0.1,
+    noise_models: dict[str, NoiseModel] | None = None,
 ) -> FittedCausalModel:
     """Fit one `gcm` mechanism per node and return the fitted model.
 
@@ -301,8 +331,16 @@ def fit_causal_model(
     missing value in any DAG column are dropped before fitting (a joint
     `dropna`, not per-node).
 
-    Root nodes (no parents) get `gcm.EmpiricalDistribution()`. Every
-    other node gets `gcm.AdditiveNoiseModel` over a
+    Root nodes (no parents) get a noise distribution picked by
+    `noise_models` (a `dict[str, NoiseModel]` mapping node name to
+    `"empirical"` or `"gaussian"`), defaulting to `"empirical"`
+    (`gcm.EmpiricalDistribution()`, today's unconditional behavior) for
+    any root not named in the mapping. `"gaussian"` fits a parametric
+    Normal instead (`gcm.ScipyDistribution(scipy.stats.norm)`). Raises
+    `KeyError` if `noise_models` names a node not in `dag`, or
+    `ValueError` if it names a node that has parents (a noise-
+    distribution choice only makes sense for a root node -- see module
+    docstring). Every other node gets `gcm.AdditiveNoiseModel` over a
     `HistGradientBoostingRegressor` whose `monotonic_cst` is built from
     the node's *asserted* parent signs, in `dowhy`'s own alphabetical
     parent order (`dowhy.graph.get_ordered_predecessors` -- every
@@ -315,6 +353,7 @@ def fit_causal_model(
     """
     dag.validate()
     _validate_columns(dag, data)
+    _validate_noise_models(dag, noise_models)
 
     graph_copy = dag.graph.copy()
     scm = gcm.StructuralCausalModel(graph_copy)
@@ -322,7 +361,8 @@ def fit_causal_model(
     for node in graph_copy.nodes:
         parents = get_ordered_predecessors(graph_copy, node)
         if not parents:
-            scm.set_causal_mechanism(node, gcm.EmpiricalDistribution())
+            choice: NoiseModel = (noise_models or {}).get(node, "empirical")
+            scm.set_causal_mechanism(node, _ROOT_NOISE_FACTORIES[choice]())
             continue
         monotonic_cst = [1 if dag.sign(parent, node) == "+" else -1 for parent in parents]
         prediction_model = HistGradientBoostingRegressor(
@@ -441,6 +481,20 @@ def falsify_causal_graph(
         significance_level=evaluation.significance_level,
         report=str(evaluation),
     )
+
+
+def _validate_noise_models(dag: DAGModel, noise_models: dict[str, NoiseModel] | None) -> None:
+    if not noise_models:
+        return
+    unknown = [n for n in noise_models if n not in dag.nodes]
+    if unknown:
+        raise KeyError(f"noise_models references unknown node(s): {sorted(unknown)}")
+    non_root = [n for n in noise_models if list(dag.graph.predecessors(n))]
+    if non_root:
+        raise ValueError(
+            "noise_models only applies to root nodes (no parents); "
+            f"got node(s) with parents: {sorted(non_root)}"
+        )
 
 
 def _validate_columns(dag: DAGModel, data: pd.DataFrame) -> None:
