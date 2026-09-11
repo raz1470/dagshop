@@ -23,27 +23,41 @@
 
     <main id="layout">
       <aside id="left-panel">
-        <div class="legend">
-          <span><span class="legend-swatch legend-treatment"></span>treatment</span>
-          <span><span class="legend-swatch legend-outcome"></span>outcome</span>
-          <span><span class="legend-swatch legend-covariate"></span>covariate</span>
+        <div id="left-panel-tabs" class="tab-bar" role="tablist">
+          <button type="button" class="tab-btn active" data-tab="workshop" role="tab"
+            aria-selected="true">Workshop</button>
+          <button type="button" class="tab-btn" data-tab="causal-model" role="tab"
+            aria-selected="false">Causal model</button>
+          <button type="button" class="tab-btn" data-tab="causal-impact" role="tab"
+            aria-selected="false">Causal impact</button>
         </div>
-        <p id="tables-hint">Click a row to see its association plot.</p>
-        <div id="tables-container"></div>
-        <div id="skipped-container"></div>
 
-        <hr class="panel-divider" />
+        <div id="tab-workshop" class="tab-panel" role="tabpanel">
+          <div class="legend">
+            <span><span class="legend-swatch legend-treatment"></span>treatment</span>
+            <span><span class="legend-swatch legend-outcome"></span>outcome</span>
+            <span><span class="legend-swatch legend-covariate"></span>covariate</span>
+          </div>
+          <p id="tables-hint">Click a row to see its association plot.</p>
+          <div id="tables-container"></div>
+          <div id="skipped-container"></div>
+        </div>
 
-        <section id="causal-panel">
-          <h2>Causal attribution</h2>
-          <p id="causal-hint">
-            Builds a causal model from the graph above (nodes + signed edges) and ranks every
-            ancestor of a chosen node by its variance-based contribution (a Shapley value from
-            <code>dowhy.gcm</code>'s intrinsic causal influence) &mdash; not a percentage of any
-            one row's score.
-          </p>
-          <button id="btn-causal-build" type="button">Build causal model</button>
-          <div id="causal-build-result" class="hidden"></div>
+        <div id="tab-causal-model" class="tab-panel hidden" role="tabpanel">
+          <section id="causal-panel">
+            <h2>Causal attribution</h2>
+            <p id="causal-hint">
+              Builds a causal model from the graph above (nodes + signed edges) and ranks every
+              ancestor of a chosen node by its variance-based contribution (a Shapley value from
+              <code>dowhy.gcm</code>'s intrinsic causal influence) &mdash; not a percentage of any
+              one row's score.
+            </p>
+            <button id="btn-causal-build" type="button">Build causal model</button>
+            <div id="causal-build-result" class="hidden"></div>
+          </section>
+        </div>
+
+        <div id="tab-causal-impact" class="tab-panel hidden" role="tabpanel">
           <div id="causal-attribute-controls" class="hidden">
             <label for="causal-target-select">Target node</label>
             <div class="causal-target-row">
@@ -52,7 +66,7 @@
             </div>
           </div>
           <div id="causal-contribution-container"></div>
-        </section>
+        </div>
       </aside>
 
       <section id="canvas-wrap">
