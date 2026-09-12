@@ -2,19 +2,21 @@
 
 Builds a `gcm.StructuralCausalModel` off a `graph.DAGModel`, fits one
 mechanism per node, and exposes thin wrappers around `dowhy`'s own
-`falsify_graph`/`evaluate_causal_model` and `intrinsic_causal_influence`
--- SCOPE.md's "Causal attribution feature" Decided section chose to wrap
-`dowhy.gcm` rather than hand-roll either, since both are real statistical
-machinery (conditional independence testing, Shapley-value variance
-decomposition, k-fold mechanism scoring) that is easy to get subtly wrong.
+`evaluate_causal_model` and `intrinsic_causal_influence` -- SCOPE.md's
+"Causal attribution feature" Decided section chose to wrap `dowhy.gcm`
+rather than hand-roll either, since both are real statistical machinery
+(conditional independence testing, Shapley-value variance decomposition,
+k-fold mechanism scoring) that is easy to get subtly wrong.
 `evaluate_causal_model` (SCOPE.md build order step 3, "Causal model tab"
-section) is meant to eventually replace this module's standalone
+section) replaces this module's former standalone
 `falsify_causal_graph`/`FalsifyResult` wrapper around
 `dowhy.gcm.falsify.falsify_graph` (Decided: retire it, since
 `evaluate_causal_model` already reruns `falsify_graph` internally as part
-of the same call) -- both still coexist here for now; see the
-`falsify_causal_graph` docstring for why it hasn't actually been deleted
-yet.
+of the same call). Both coexisted for two build-order steps
+(`server.py`'s `POST /api/causal/build` kept calling the old path until
+its own migration); build order step 5 deletes `falsify_causal_graph`/
+`FalsifyResult` in the same change that moves `server.py` onto
+`evaluate_causal_model`/`build_node_plots`.
 
 Pure logic, no UI dependency: testable standalone against
 `demo_data.make_csat_demo_data`, same pattern `graph.py` and `associate.py`
@@ -108,7 +110,7 @@ Judgment calls made in this module, not directed by SCOPE.md
   `falsify_graph`'s signature at all. Both `gcm.ShapleyConfig.n_jobs`
   and that bootstrap default fall back to the same place,
   `dowhy.gcm.config.default_n_jobs`, when not given explicitly, so
-  `attribute_target`/`falsify_causal_graph` reach every internal joblib
+  `attribute_target`/`evaluate_causal_model` reach every internal joblib
   call at once by temporarily overriding that global for the duration of
   the call (`_n_jobs_override`) instead of threading `n_jobs` through
   each function's own differently-shaped parameter. Left unset (`dowhy`'s
@@ -166,16 +168,6 @@ Judgment calls made in this module, not directed by SCOPE.md
   both already mean the same thing elsewhere in this module
   (`attribute_target`'s unknown-node `KeyError`, `_validate_columns`'s
   dtype `ColumnTypeError`).
-- **`falsify_causal_graph`/`FalsifyResult` are not actually deleted in
-  the same change that adds `evaluate_causal_model`, despite SCOPE.md's
-  Decided section calling for their retirement.** Discovered while
-  implementing build order step 3: `server.py`'s `POST
-  /api/causal/build` (step 5, not yet done) still imports and calls
-  `falsify_causal_graph` directly and serializes `FalsifyResult` into
-  its response. Deleting both now would leave `server.py` (and its
-  tests) broken between this step and step 5, for no benefit -- the
-  retirement decision stands, but the actual removal is deferred to
-  step 5, done in the same change that migrates `server.py` off it.
 - **`EvaluateCausalModelConfig`'s own `n_jobs` is resolved once, at
   construction time, not lazily when `evaluate_causal_model` is
   called.** `EvaluateCausalModelConfig.__init__` runs `n_jobs =
@@ -250,7 +242,7 @@ import numpy as np
 import pandas as pd
 from dowhy import gcm
 from dowhy.gcm import config as gcm_config
-from dowhy.gcm.falsify import EvaluationResult, falsify_graph
+from dowhy.gcm.falsify import EvaluationResult
 from dowhy.gcm.model_evaluation import EvaluateCausalModelConfig
 from dowhy.graph import get_ordered_predecessors
 from scipy.stats import norm, spearmanr
@@ -295,7 +287,7 @@ def _n_jobs_override(n_jobs: int | None):
     directly, and that internal test's own bootstrap parallelism isn't
     reachable any other way -- overriding this one global for the
     duration of a call is the only mechanism that reaches every internal
-    joblib call `attribute_target`/`falsify_causal_graph` can trigger.
+    joblib call `attribute_target`/`evaluate_causal_model` can trigger.
     A no-op (nothing saved or restored) when `n_jobs` is `None`.
     """
     if n_jobs is None:
@@ -370,23 +362,6 @@ class AttributionResult:
 
 
 @dataclass(frozen=True)
-class FalsifyResult:
-    """Result of `falsify_causal_graph`, mirroring `dowhy`'s own `EvaluationResult`.
-
-    `falsified`/`falsifiable` are `None` when the permutation test
-    couldn't be evaluated at all (`dowhy`'s own `can_evaluate` case, e.g.
-    too few nodes to permute meaningfully) rather than a `False`/`False`
-    "the graph is fine" reading -- callers should treat `None` as
-    "inconclusive," not as a pass.
-    """
-
-    falsified: bool | None
-    falsifiable: bool | None
-    significance_level: float
-    report: str
-
-
-@dataclass(frozen=True)
 class MechanismPerformance:
     """One node's per-mechanism evaluation from `dowhy.gcm.evaluate_causal_model`.
 
@@ -413,9 +388,10 @@ class MechanismPerformance:
 
 @dataclass(frozen=True)
 class ModelEvaluation:
-    """Result of `evaluate_causal_model`, meant to eventually replace
-    `falsify_causal_graph`'s standalone call (see module docstring: not
-    yet done, `server.py` still depends on the old path).
+    """Result of `evaluate_causal_model`, which replaces the module's
+    former standalone `falsify_causal_graph` call (see module
+    docstring: `server.py` now builds this instead, SCOPE.md build
+    order step 5).
 
     `graph_falsification` is `dowhy`'s own `EvaluationResult` object,
     unwrapped -- see module docstring for why this isn't reshaped into a
@@ -657,39 +633,6 @@ def attribute_target(
     ]
 
 
-def falsify_causal_graph(
-    fitted: FittedCausalModel,
-    data: pd.DataFrame,
-    *,
-    significance_level: float = 0.05,
-    n_jobs: int | None = None,
-) -> FalsifyResult:
-    """Run `dowhy`'s node-permutation graph refutation test against `data`.
-
-    Thin wrapper around `dowhy.gcm.falsify.falsify_graph`, run against
-    the same (copied) graph `fit_causal_model` actually fit, not `dag`
-    directly. `n_jobs` is left unset (`dowhy`'s own default) unless
-    given explicitly -- see module docstring.
-
-    Superseded by `evaluate_causal_model` below (SCOPE.md's "Causal
-    model tab" Decided section: retire this once `server.py` migrates
-    off it), but still called directly by `server.py`'s `POST
-    /api/causal/build` today -- not yet deleted for that reason, see
-    module docstring.
-    """
-    eval_data = data[fitted.dag.nodes].dropna()
-    with _n_jobs_override(n_jobs):
-        evaluation = falsify_graph(
-            fitted.scm.graph, eval_data, significance_level=significance_level
-        )
-    return FalsifyResult(
-        falsified=evaluation.falsified,
-        falsifiable=evaluation.falsifiable,
-        significance_level=evaluation.significance_level,
-        report=str(evaluation),
-    )
-
-
 def evaluate_causal_model(
     fitted: FittedCausalModel,
     data: pd.DataFrame,
@@ -711,10 +654,13 @@ def evaluate_causal_model(
     `kl_divergence` instead (also via 5-fold CV, comparing the fitted
     noise distribution's own samples against held-out actual values).
 
-    `significance_level` defaults to `0.05`, matching
-    `falsify_causal_graph`'s own default -- `dowhy`'s own
-    `EvaluateCausalModelConfig` defaults `falsify_graph_significance_level`
-    to `0.2` (see module docstring). `n_jobs` behaves like every other
+    `significance_level` defaults to `0.05`, this module's original
+    default for graph falsification (see the module's former
+    `falsify_causal_graph`, since deleted -- SCOPE.md build order step
+    5). `dowhy`'s own `EvaluateCausalModelConfig` defaults
+    `falsify_graph_significance_level` to `0.2` instead (see module
+    docstring), so this is passed explicitly to preserve the original
+    behavior. `n_jobs` behaves like every other
     `n_jobs` parameter in this module: left unset (`dowhy`'s own
     default) unless given explicitly, via the same global
     `_n_jobs_override` mechanism -- see module docstring for why
@@ -793,7 +739,7 @@ def build_node_plots(
 
     Node set and per-node parents/signs are read from `fitted.dag.nodes`
     and `fitted.scm.graph` respectively, not re-derived from `data` --
-    same precedent `attribute_target`/`falsify_causal_graph` already
+    same precedent `attribute_target`/`evaluate_causal_model` already
     follow, so this reflects what was actually fit even if `fitted.dag`
     has since been edited (this repo does not auto-invalidate a build's
     cache on a later graph edit).

@@ -34,26 +34,56 @@ once `n` is 50+ (SCOPE.md's stated scale target): the cache can hold
 Needs graph.py and associate.py working first, since it serves their
 outputs. See SCOPE.md build order step 3.
 
-Causal attribution (SCOPE.md build order step 5): two more
-endpoints on top of the same in-memory state model above, not a second
-session concept. `POST /api/causal/build` calls `causal_model.fit_causal_model`
-against the *current* `dag` (whatever the workshop has edited it to by the
-time build is clicked, not the startup snapshot) and `data`, then
-`causal_model.falsify_causal_graph`, and caches the fitted model in a
-closure variable (`causal_model_state`) the same way `dag` itself is
-cached -- "cache the result" per SCOPE.md's build-order wording. Editing
-the graph after a build does not invalidate that cache automatically
-(matches the rest of this file: nothing here auto-invalidates the
-association scan either); the workshop rebuilds by calling the endpoint
-again. `GET /api/causal/attribute/{target_node}` reads that cache and
-raises a plain 400 (via `HTTPException`, same pattern as the export/
-session-load routes) if nothing has been built yet, rather than silently
-building on first use -- fitting is not cheap enough to hide behind a GET.
-Both routes reuse the existing `KeyError`/`ValueError` exception handlers
-above rather than adding new ones: `causal_model.py`'s own errors
-(`GraphValidationError` for a cyclic graph, `ColumnTypeError` for a
-non-numeric column, `KeyError` for an unknown target node) already map
-cleanly to 400/404 through them.
+Causal attribution: three endpoints on top of the same in-memory state
+model above, not a second session concept. `POST /api/causal/build`
+takes an optional per-root-node `noise_models` choice in its body,
+calls `causal_model.fit_causal_model` against the *current* `dag`
+(whatever the workshop has edited it to by the time build is clicked,
+not the startup snapshot) and `data`, then
+`causal_model.evaluate_causal_model` (SCOPE.md build order step 3;
+wraps `dowhy`'s own `evaluate_causal_model`, which already reruns the
+graph-falsification test internally -- this replaced the module's
+former standalone `falsify_causal_graph`/`FalsifyResult` call as of
+build order step 5, see `causal_model.py`'s module docstring) and
+`causal_model.build_node_plots` (step 4; the per-node actual-vs-
+predicted/observed-vs-sampled plot data, and the only source of the
+per-node AUC folded into the build response below). Both the fitted
+model and the plot data are cached in closure variables
+(`causal_model_state`/`causal_node_plots`) the same way `dag` itself
+is cached -- "cache the result" per SCOPE.md's build-order wording.
+Editing the graph after a build does not invalidate either cache
+automatically (matches the rest of this file: nothing here
+auto-invalidates the association scan either, and SCOPE.md's Decided
+section for this feature confirms validation results follow the same
+rule); the workshop rebuilds by calling the endpoint again.
+
+`POST /api/causal/build`'s response flattens `ModelEvaluation` and the
+per-node AUC into one `evaluation` object (`_serialize_evaluation`
+below): `graph_falsification` is reduced from `dowhy`'s own
+`EvaluationResult` down to the `falsified`/`falsifiable`/
+`significance_level` fields the old `FalsifyResult` used to expose
+directly (its other fields, `summary`/`suggestions`, are `dowhy`-
+internal and not JSON-safe -- and not dataclass fields in the first
+place, so `dataclasses.asdict` would miss them regardless). Each
+`mechanism_performances` row gets an `auc` field merged in from
+`causal_node_plots`, `None` for a root node or a non-root node whose
+held-out split didn't land both classes (see `build_node_plots`'
+docstring).
+
+`GET /api/causal/attribute/{target_node}` and `GET
+/api/causal/plot/{node}` both read the caches above and raise a plain
+400 (via `HTTPException`, same pattern as the export/session-load
+routes) if nothing has been built yet, rather than silently building
+on first use -- fitting is not cheap enough to hide behind a GET.
+`get_causal_node_plot` then 404s for a node the build didn't cover,
+same `not-built vs not-found` two-step `get_plot` above already uses
+for the association scan's own plot cache. All three routes reuse the
+existing `KeyError`/`ValueError` exception handlers above rather than
+adding new ones: `causal_model.py`'s own errors (`GraphValidationError`
+for a cyclic graph, `ColumnTypeError` for a non-numeric column,
+`KeyError` for an unknown target node or an unknown `noise_models`
+node, `ValueError` for a `noise_models` node that isn't a root) already
+map cleanly to 400/404 through them.
 """
 
 from __future__ import annotations
@@ -73,9 +103,14 @@ from pydantic import BaseModel
 
 from dagshop.associate import scan_associations
 from dagshop.causal_model import (
+    ActualVsPredictedPlot,
     FittedCausalModel,
+    ModelEvaluation,
+    NoiseModel,
+    ObservedVsSampledPlot,
     attribute_target,
-    falsify_causal_graph,
+    build_node_plots,
+    evaluate_causal_model,
     fit_causal_model,
 )
 from dagshop.graph import CycleWarning, DAGModel, GraphValidationError, Role, Sign
@@ -127,6 +162,46 @@ class ExportRequest(BaseModel):
 
 class SessionPathRequest(BaseModel):
     path: str
+
+
+class CausalBuildRequest(BaseModel):
+    """Per-root-node noise distribution choice for `POST /api/causal/build`.
+
+    Optional and defaults to `None` (every root stays `"empirical"`,
+    today's behavior) so the endpoint still works with no body at all,
+    matching every request-body-less `POST` elsewhere in this file
+    before this one.
+    """
+
+    noise_models: dict[str, NoiseModel] | None = None
+
+
+def _serialize_evaluation(
+    evaluation: ModelEvaluation,
+    node_plots: dict[str, ActualVsPredictedPlot | ObservedVsSampledPlot],
+) -> dict[str, Any]:
+    """Flatten `ModelEvaluation` (causal_model.py build order step 3) plus
+    per-node AUC (step 4's `build_node_plots`) into one JSON-safe shape
+    for `POST /api/causal/build`'s response. See module docstring's
+    causal-attribution section for why `graph_falsification` is reduced
+    to three fields rather than passed through as-is.
+    """
+    falsification = evaluation.graph_falsification
+    mechanism_performances = []
+    for node, performance in evaluation.mechanism_performances.items():
+        plot = node_plots.get(node)
+        auc = plot.auc if isinstance(plot, ActualVsPredictedPlot) else None
+        mechanism_performances.append({**asdict(performance), "auc": auc})
+    return {
+        "mechanism_performances": mechanism_performances,
+        "overall_kl_divergence": evaluation.overall_kl_divergence,
+        "graph_falsification": {
+            "falsified": falsification.falsified,
+            "falsifiable": falsification.falsifiable,
+            "significance_level": falsification.significance_level,
+        },
+        "report": evaluation.report,
+    }
 
 
 # -- app factory ----------------------------------------------------------------
@@ -200,10 +275,12 @@ def create_app(
     if initial_session is not None:
         dag = DAGModel.load_session(initial_session)
 
-    # Cache for the fitted causal model, mirroring `dag`/`scan` above: set
-    # by POST /api/causal/build, read by GET /api/causal/attribute/... .
-    # None until the first successful build.
+    # Cache for the fitted causal model and its per-node plot data,
+    # mirroring `dag`/`scan` above: both set by POST /api/causal/build,
+    # read by GET /api/causal/attribute/... and GET /api/causal/plot/...
+    # respectively. None until the first successful build.
     causal_model_state: FittedCausalModel | None = None
+    causal_node_plots: dict[str, ActualVsPredictedPlot | ObservedVsSampledPlot] | None = None
 
     app = FastAPI(title="DAGshop")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -356,19 +433,22 @@ def create_app(
             )
         return asdict(plot)
 
-    # -- causal attribution (SCOPE.md build order step 5) ------------------
+    # -- causal attribution ------------------------------------------------
 
     @app.post("/api/causal/build")
-    def build_causal_model() -> dict[str, Any]:
-        nonlocal causal_model_state
-        fitted = fit_causal_model(dag, data, random_state=random_state)
-        falsify = falsify_causal_graph(fitted, data)
+    def build_causal_model(body: CausalBuildRequest | None = None) -> dict[str, Any]:
+        nonlocal causal_model_state, causal_node_plots
+        noise_models = body.noise_models if body is not None else None
+        fitted = fit_causal_model(dag, data, random_state=random_state, noise_models=noise_models)
+        evaluation = evaluate_causal_model(fitted, data)
+        node_plots = build_node_plots(fitted, data, test_size=test_size, random_state=random_state)
         causal_model_state = fitted
+        causal_node_plots = node_plots
         return {
             "fitted": True,
             "attributable_nodes": dag.nodes,
             "sign_disagreements": [asdict(d) for d in fitted.sign_disagreements],
-            "falsify": asdict(falsify),
+            "evaluation": _serialize_evaluation(evaluation, node_plots),
         }
 
     @app.get("/api/causal/attribute/{target_node}")
@@ -388,6 +468,21 @@ def create_app(
             "target_node": target_node,
             "contributions": [asdict(r) for r in contributions],
         }
+
+    @app.get("/api/causal/plot/{node}")
+    def get_causal_node_plot(node: str) -> dict[str, Any]:
+        if causal_node_plots is None:
+            raise HTTPException(
+                status_code=400,
+                detail="causal model not built yet -- POST /api/causal/build first",
+            )
+        plot = causal_node_plots.get(node)
+        if plot is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no node {node!r} in the last built causal model",
+            )
+        return asdict(plot)
 
     return app
 

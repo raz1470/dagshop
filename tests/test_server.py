@@ -487,18 +487,66 @@ def test_attribute_before_build_is_400(client):
     assert "build" in resp.json()["detail"]
 
 
-def test_build_causal_model(client, sequential_gcm_jobs):
+def _build_chain(client):
+    """`a -> b -> c`, all "+": `a` is the only root."""
     client.post("/api/edges", json={"source": "a", "target": "b", "sign": "+"})
     client.post("/api/edges", json={"source": "b", "target": "c", "sign": "+"})
-    resp = client.post("/api/causal/build")
+    return client.post("/api/causal/build")
+
+
+def test_build_causal_model(client, sequential_gcm_jobs):
+    resp = _build_chain(client)
     assert resp.status_code == 200
     body = resp.json()
     assert body["fitted"] is True
     assert set(body["attributable_nodes"]) == {"a", "b", "c"}
     assert body["sign_disagreements"] == [] or isinstance(body["sign_disagreements"], list)
-    assert "falsified" in body["falsify"]
-    assert "falsifiable" in body["falsify"]
-    assert "report" in body["falsify"]
+
+    evaluation = body["evaluation"]
+    assert isinstance(evaluation["overall_kl_divergence"], float)
+    assert isinstance(evaluation["report"], str) and evaluation["report"]
+    falsification = evaluation["graph_falsification"]
+    assert "falsified" in falsification
+    assert "falsifiable" in falsification
+    assert falsification["significance_level"] == 0.05
+
+    performances = {row["node"]: row for row in evaluation["mechanism_performances"]}
+    assert set(performances) == {"a", "b", "c"}
+    # "a" is the root: no r2/auc, kl_divergence populated instead.
+    assert performances["a"]["is_root"] is True
+    assert performances["a"]["kl_divergence"] is not None
+    assert performances["a"]["r2"] is None
+    assert performances["a"]["auc"] is None
+    # "b"/"c" are non-root: r2 populated, kl_divergence is not. "auc" is
+    # present either way (None for a continuous node, see
+    # causal_model.py's ActualVsPredictedPlot docstring) -- these demo
+    # columns are continuous, so both are None here.
+    for node in ("b", "c"):
+        assert performances[node]["is_root"] is False
+        assert performances[node]["r2"] is not None
+        assert performances[node]["kl_divergence"] is None
+        assert performances[node]["auc"] is None
+
+
+def test_build_causal_model_with_noise_models(client, sequential_gcm_jobs):
+    client.post("/api/edges", json={"source": "a", "target": "b", "sign": "+"})
+    client.post("/api/edges", json={"source": "b", "target": "c", "sign": "+"})
+    resp = client.post("/api/causal/build", json={"noise_models": {"a": "gaussian"}})
+    assert resp.status_code == 200
+
+
+def test_build_causal_model_unknown_noise_node_is_404(client, sequential_gcm_jobs):
+    client.post("/api/edges", json={"source": "a", "target": "b", "sign": "+"})
+    resp = client.post("/api/causal/build", json={"noise_models": {"nope": "gaussian"}})
+    assert resp.status_code == 404
+
+
+def test_build_causal_model_non_root_noise_node_is_400(client, sequential_gcm_jobs):
+    client.post("/api/edges", json={"source": "a", "target": "b", "sign": "+"})
+    # "b" has a parent ("a"): a noise-distribution choice only makes
+    # sense for a root node (see causal_model.py's `_validate_noise_models`).
+    resp = client.post("/api/causal/build", json={"noise_models": {"b": "gaussian"}})
+    assert resp.status_code == 400
 
 
 def test_build_causal_model_cyclic_graph_is_400(client, sequential_gcm_jobs):
@@ -533,6 +581,49 @@ def test_attribute_unknown_node_is_404(client, sequential_gcm_jobs):
     client.post("/api/causal/build")
     resp = client.get("/api/causal/attribute/nope")
     assert resp.status_code == 404
+
+
+# -- causal per-node plots ------------------------------------------------------
+
+
+def test_causal_plot_before_build_is_400(client):
+    resp = client.get("/api/causal/plot/a")
+    assert resp.status_code == 400
+    assert "build" in resp.json()["detail"]
+
+
+def test_causal_plot_root_node_returns_observed_vs_sampled(client, sequential_gcm_jobs):
+    resp = _build_chain(client)
+    assert resp.status_code == 200
+    plot_resp = client.get("/api/causal/plot/a")
+    assert plot_resp.status_code == 200
+    body = plot_resp.json()
+    assert body["node"] == "a"
+    assert isinstance(body["observed"], list) and body["observed"]
+    assert isinstance(body["sampled"], list) and body["sampled"]
+    assert "actual" not in body
+    assert "predicted" not in body
+
+
+def test_causal_plot_non_root_node_returns_actual_vs_predicted(client, sequential_gcm_jobs):
+    resp = _build_chain(client)
+    assert resp.status_code == 200
+    plot_resp = client.get("/api/causal/plot/c")
+    assert plot_resp.status_code == 200
+    body = plot_resp.json()
+    assert body["node"] == "c"
+    assert isinstance(body["actual"], list) and body["actual"]
+    assert isinstance(body["predicted"], list) and body["predicted"]
+    assert len(body["actual"]) == len(body["predicted"])
+    assert "auc" in body
+    assert "observed" not in body
+
+
+def test_causal_plot_unknown_node_after_build_is_404(client, sequential_gcm_jobs):
+    resp = _build_chain(client)
+    assert resp.status_code == 200
+    plot_resp = client.get("/api/causal/plot/nope")
+    assert plot_resp.status_code == 404
 
 
 # -- static assets ------------------------------------------------------------------

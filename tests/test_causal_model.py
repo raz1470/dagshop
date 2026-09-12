@@ -6,7 +6,7 @@ full `demo_data.make_csat_demo_data` scenario, to keep fitting/attribution
 fast -- one slower end-to-end smoke test at the bottom exercises the real
 CSAT scenario instead.
 
-`n_jobs=1` is passed to `attribute_target`/`falsify_causal_graph`
+`n_jobs=1` is passed to `attribute_target`/`evaluate_causal_model`
 throughout: the sandboxed bridge shell used for development hits
 `BrokenProcessPool`/`OSError: Too many open files` under `dowhy`'s
 default joblib parallelism (see causal_model.py's module docstring) --
@@ -41,7 +41,6 @@ from dagshop.associate import ColumnTypeError
 from dagshop.causal_model import (
     ActualVsPredictedPlot,
     AttributionResult,
-    FalsifyResult,
     MechanismPerformance,
     ModelEvaluation,
     ObservedVsSampledPlot,
@@ -52,7 +51,6 @@ from dagshop.causal_model import (
     attribute_target,
     build_node_plots,
     evaluate_causal_model,
-    falsify_causal_graph,
     fit_causal_model,
 )
 from dagshop.graph import DAGModel, GraphValidationError
@@ -397,24 +395,6 @@ def test_sign_disagreements_skips_constant_column_nan_correlation() -> None:
         assert _sign_disagreements(dag, data, min_correlation=0.1) == []
 
 
-# -- falsify --------------------------------------------------------------------
-
-
-def test_falsify_causal_graph_returns_result_with_report() -> None:
-    dag, data = _root_mid_target_dag_and_data()
-    fitted = _fit(dag, data)
-    result = falsify_causal_graph(fitted, data, n_jobs=1)
-    assert isinstance(result, FalsifyResult)
-    assert result.significance_level == 0.05
-    assert isinstance(result.report, str)
-    assert len(result.report) > 0
-    # falsified/falsifiable are None only when dowhy can't evaluate at
-    # all; with a real, non-degenerate 3-node DAG they should resolve to
-    # actual booleans.
-    assert result.falsified in (True, False)
-    assert result.falsifiable in (True, False)
-
-
 # -- evaluate_causal_model -------------------------------------------------------
 
 
@@ -459,8 +439,9 @@ def test_evaluate_causal_model_non_root_node_gets_r2_not_kl_divergence() -> None
 def test_evaluate_causal_model_significance_level_overrides_dowhy_default() -> None:
     """dowhy's own EvaluateCausalModelConfig defaults
     falsify_graph_significance_level to 0.2; this module's wrapper
-    defaults to 0.05 instead, matching falsify_causal_graph's own
-    default (see module docstring).
+    defaults to 0.05 instead, the module's original default for graph
+    falsification from its now-deleted `falsify_causal_graph` (see
+    module docstring).
     """
     dag, data = _root_mid_target_dag_and_data()
     fitted = _fit(dag, data)
