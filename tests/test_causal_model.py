@@ -143,6 +143,34 @@ def test_root_node_noise_unspecified_still_defaults_to_empirical() -> None:
     assert isinstance(fitted.scm.causal_mechanism("root"), gcm.EmpiricalDistribution)
 
 
+def test_root_node_gaussian_noise_actually_changes_sampled_output() -> None:
+    """SCOPE.md build order step 7: the noise override has to change what
+    gets *sampled*, not just the mechanism's Python type (that part is
+    already covered above). Distinguishes the two noise choices by a
+    property each guarantees structurally, not by a threshold on the
+    samples themselves: `gcm.EmpiricalDistribution` resamples with
+    replacement directly from the observed column, so every value it
+    draws is necessarily one of the observed values; `gcm.ScipyDistribution
+    (scipy.stats.norm)` draws from a fitted continuous Normal instead, so
+    a freshly drawn value landing on an exact observed float is
+    vanishingly unlikely. If the noise override silently had no effect
+    on sampling, the gaussian-fitted mechanism's draws would still all
+    match observed values like the empirical one's do.
+    """
+    dag, data = _root_mid_target_dag_and_data()
+    fitted_empirical = _fit(dag, data)
+    fitted_gaussian = _fit(dag, data, noise_models={"root": "gaussian"})
+
+    empirical_plot = build_node_plots(fitted_empirical, data, random_state=0)["root"]
+    gaussian_plot = build_node_plots(fitted_gaussian, data, random_state=0)["root"]
+    assert isinstance(empirical_plot, ObservedVsSampledPlot)
+    assert isinstance(gaussian_plot, ObservedVsSampledPlot)
+
+    observed_values = set(empirical_plot.observed)
+    assert all(value in observed_values for value in empirical_plot.sampled)
+    assert all(value not in observed_values for value in gaussian_plot.sampled)
+
+
 def test_noise_models_unknown_node_raises_key_error() -> None:
     dag, data = _root_mid_target_dag_and_data()
     with pytest.raises(KeyError):
@@ -578,3 +606,93 @@ def test_csat_scenario_end_to_end_ranks_resolved_highest() -> None:
     )
     by_node = {r.node: r.contribution for r in results if r.node != "csat"}
     assert max(by_node, key=by_node.get) == "resolved"
+
+
+def test_evaluate_causal_model_csat_scenario_produces_believable_numbers() -> None:
+    """SCOPE.md build order step 7: `evaluate_causal_model` against the
+    real, documented CSAT scenario, not just the tiny root-mid-target
+    fixture the tests above use -- and specifically root-node KL
+    divergence at that scale, another step 7 item.
+
+    `n_rows=250` rather than the 1000 used elsewhere in this file: this
+    test's `falsify_graph` permutation test scales poorly with row
+    count (measured ~150s at 1000 rows with `n_jobs=1` forced, enough
+    to blow past this project's per-command timeout in the sandboxed
+    bridge; ~20s at 250). `random_state=0` is passed to
+    `evaluate_causal_model` itself (not just `make_csat_demo_data`)
+    because its R2/CRPS/KL numbers turned out to depend on it too --
+    `dowhy`'s internal `KFold(shuffle=True)` draws from numpy's global
+    legacy RNG rather than a seeded local one, so two runs with
+    identical inputs produced different numbers until this was found
+    (see this module's docstring and `evaluate_causal_model`'s own for
+    the fix, `_random_state_override`, shared with `attribute_target`'s
+    pre-existing use of the same mechanism).
+
+    Thresholds below are the actual measured values at this exact
+    `n_rows`/`random_state`, confirmed identical across two back-to-back
+    runs (checked directly before writing this test, not guessed):
+    `csat`'s R2 came back ~0.312, comfortably clear of the 0.25 floor
+    here. Not asserting a floor on `resolved`'s own R2 (~-0.005
+    measured, i.e. worse than predicting the mean): `demo_data.py`'s
+    docstring only documents `resolved` as `csat`'s strongest
+    Shapley-attributed ancestor (already covered by the test above),
+    not as itself easy to predict from its own direct parents.
+    """
+    from dagshop.demo_data import make_csat_demo_data
+
+    data = make_csat_demo_data(n_rows=250, random_state=0)
+    dag = _csat_dag()
+    fitted = _fit(dag, data)
+    result = evaluate_causal_model(fitted, data, n_jobs=1, random_state=0)
+
+    assert set(result.mechanism_performances) == set(dag.nodes)
+    root_nodes = {"age", "friction_severity", "time_to_respond", "repeat_contact"}
+    for node in root_nodes:
+        performance = result.mechanism_performances[node]
+        assert performance.is_root is True
+        assert performance.kl_divergence is not None
+        assert performance.kl_divergence >= 0
+        assert performance.r2 is None
+        assert performance.crps is None
+
+    for node in set(dag.nodes) - root_nodes:
+        performance = result.mechanism_performances[node]
+        assert performance.is_root is False
+        assert performance.kl_divergence is None
+        assert performance.r2 is not None
+        assert performance.crps is not None
+
+    csat_performance = result.mechanism_performances["csat"]
+    assert csat_performance.r2 > 0.25
+
+    assert result.overall_kl_divergence >= 0
+    assert result.graph_falsification.falsified in (True, False)
+    assert result.graph_falsification.falsifiable in (True, False)
+    assert isinstance(result.report, str) and len(result.report) > 0
+
+
+def test_build_node_plots_csat_scenario_resolved_gets_auc() -> None:
+    """SCOPE.md build order step 7: the AUC path for a binary-coded node,
+    against the real CSAT scenario specifically (the small, strongly-
+    separable synthetic fixture in `test_build_node_plots_binary_node_
+    gets_auc_well_above_chance` above already covers the "well above
+    chance" case). `resolved`'s own relationship to its direct parents
+    is comparatively weak in this generator (measured AUC ~0.568 at
+    this `n_rows`/`random_state`, barely above the 0.5 floor) -- see
+    this test's sibling above for why that's expected, not a bug. Only
+    asserting the AUC path actually produces a real number here, not a
+    strength floor that would be flaky against a genuinely weak signal.
+
+    `n_rows=250`, matching the sibling test above, for the same reason:
+    keeps the module's slower CSAT-scale tests under this project's
+    per-command timeout in the sandboxed bridge.
+    """
+    from dagshop.demo_data import make_csat_demo_data
+
+    data = make_csat_demo_data(n_rows=250, random_state=0)
+    dag = _csat_dag()
+    fitted = _fit(dag, data)
+    plots = build_node_plots(fitted, data, random_state=0)
+    resolved_plot = plots["resolved"]
+    assert isinstance(resolved_plot, ActualVsPredictedPlot)
+    assert resolved_plot.auc is not None

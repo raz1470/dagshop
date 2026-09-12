@@ -370,11 +370,13 @@ class MechanismPerformance:
     for: `f1` and the baseline-model-comparison fields are dropped
     entirely, not just left `None` (see module docstring for why).
 
-    `crps` is populated for every node. `kl_divergence` is populated
-    only for a root node (`is_root=True`); `mse`/`nmse`/`r2` only for a
-    non-root one -- the unpopulated field for a given node is `None`,
-    not omitted, so callers can branch on `is_root` rather than probing
-    which fields happen to be set.
+    `kl_divergence` is populated only for a root node (`is_root=True`);
+    `crps`/`mse`/`nmse`/`r2` only for a non-root one -- `dowhy`'s own
+    `_evaluate_model_performances` only computes CRPS in its non-root
+    branch (checked directly: the root branch's k-fold loop estimates
+    KL divergence alone). The unpopulated field for a given node is
+    `None`, not omitted, so callers can branch on `is_root` rather than
+    probing which fields happen to be set.
     """
 
     node: str
@@ -639,6 +641,7 @@ def evaluate_causal_model(
     *,
     significance_level: float = 0.05,
     n_jobs: int | None = None,
+    random_state: int | None = None,
 ) -> ModelEvaluation:
     """Run `dowhy`'s `evaluate_causal_model` against the already-fitted SCM.
 
@@ -666,9 +669,23 @@ def evaluate_causal_model(
     `_n_jobs_override` mechanism -- see module docstring for why
     `EvaluateCausalModelConfig` has to be built *inside* that override,
     not before it.
+
+    `random_state` (found necessary while writing this module's own
+    test suite, build order step 7 -- see module docstring):
+    `dowhy`'s internal `_evaluate_model_performances` builds its 5-fold
+    split with `sklearn.model_selection.KFold(shuffle=True)`, no
+    `random_state` of its own, which resolves to numpy's *global*
+    legacy RNG (`numpy.random.mtrand._rand`) -- the exact same global
+    state `attribute_target`'s own `random_state` note above already
+    describes `dowhy.gcm`'s Shapley/influence code drawing from. Two
+    back-to-back calls against identical inputs produced different
+    `r2`/`crps`/`kl_divergence` numbers before this parameter existed
+    (checked directly). Reuses `_random_state_override`, the same
+    mechanism `attribute_target` already uses for the same reason; left
+    `None` (unseeded) unless a caller passes one.
     """
     eval_data = data[fitted.dag.nodes].dropna()
-    with _n_jobs_override(n_jobs):
+    with _n_jobs_override(n_jobs), _random_state_override(random_state):
         config = EvaluateCausalModelConfig(falsify_graph_significance_level=significance_level)
         raw = gcm.evaluate_causal_model(fitted.scm, eval_data, config=config)
 
