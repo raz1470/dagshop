@@ -440,7 +440,7 @@ def create_app(
         nonlocal causal_model_state, causal_node_plots
         noise_models = body.noise_models if body is not None else None
         fitted = fit_causal_model(dag, data, random_state=random_state, noise_models=noise_models)
-        evaluation = evaluate_causal_model(fitted, data)
+        evaluation = evaluate_causal_model(fitted, data, random_state=random_state)
         node_plots = build_node_plots(fitted, data, test_size=test_size, random_state=random_state)
         causal_model_state = fitted
         causal_node_plots = node_plots

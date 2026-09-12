@@ -32,6 +32,12 @@ summary, the target-node picker, the ranked contribution table, and
 the row-click reuse of this same plot modal. Same bridge limitation as
 above -- validated by static reading only here, real signal from CI.
 
+`test_causal_noise_dropdown_and_node_validation_plots` (SCOPE.md build
+order step 7) covers the root-node noise dropdown, the per-node
+fit-validation table, and its own `#node-plot-modal` -- a root node's
+observed-vs-sampled histogram and a non-root node's actual-vs-predicted
+scatter alike. Same bridge limitation as the two tests above.
+
 `test_left_panel_tabs` covers the Workshop/Causal model/Causal impact
 tab split of `#left-panel`: clicking a tab shows only that tab's panel,
 and the canvas (which lives outside `#left-panel`) stays visible and
@@ -343,6 +349,93 @@ def test_causal_build_and_attribute_panel(live_server, page):
     page.wait_for_selector("#plot-modal-body .js-plotly-plot")
 
     assert console_errors == [], f"console errors in causal panel: {console_errors}"
+
+
+def test_causal_noise_dropdown_and_node_validation_plots(live_server, page):
+    """SCOPE.md build order step 7: the root-node noise dropdown, the
+    per-node fit-validation table, and its new plot modal
+    (`#node-plot-modal`, distinct from the pairwise-association
+    `#plot-modal` `test_causal_build_and_attribute_panel` above already
+    covers) -- a root node's observed-vs-sampled histogram and a
+    non-root node's actual-vs-predicted scatter alike.
+
+    Wires up one real edge first (`age -> outcome`, "+"), same as
+    `test_causal_build_and_attribute_panel` above, so the build has
+    both a still-root node ("treated", left at its default) and a
+    non-root one ("outcome") to open a validation plot for. The edge's
+    source, "age", stays a root itself -- it's "outcome" (the edge's
+    target) that gains a parent and drops out of the noise dropdown.
+    """
+    console_errors: list[str] = []
+
+    page.goto(live_server)
+    page.wait_for_selector("#cy canvas")
+
+    _post_json(f"{live_server}/api/edges", {"source": "age", "target": "outcome", "sign": "+"})
+    page.reload()
+    page.wait_for_selector("#cy canvas")
+
+    page.on("console", lambda msg: msg.type == "error" and console_errors.append(msg.text))
+    page.on("pageerror", lambda exc: console_errors.append(str(exc)))
+
+    page.click('[data-tab="causal-model"]')
+    page.wait_for_selector("#causal-noise-container .causal-noise-row")
+
+    # "outcome" now has a parent (the edge just added), so it's no
+    # longer a root and gets no dropdown; "age" (the edge's source, not
+    # its target) keeps no parent of its own and stays a root, same as
+    # "treated" and "other", which the edge never touched.
+    noise_rows = page.query_selector_all("#causal-noise-container .causal-noise-row")
+    noise_labels = [r.query_selector("label").inner_text() for r in noise_rows]
+    assert "outcome" not in noise_labels
+    assert "age" in noise_labels
+    assert "treated" in noise_labels
+    assert "other" in noise_labels
+
+    treated_noise_row = noise_rows[noise_labels.index("treated")]
+    treated_noise_row.query_selector("select.causal-noise-select").select_option("gaussian")
+
+    page.click("#btn-causal-build")
+    page.wait_for_selector("#causal-build-result:not(.hidden)")
+
+    # Per-node fit-validation table (SCOPE.md step 7): one row per DAG
+    # node, root and non-root alike -- distinct from the driver-ranking
+    # table on the "Causal impact" tab, which only lists a chosen
+    # target's ancestors.
+    page.wait_for_selector("#causal-validation-container table.rank-table tbody tr")
+    validation_rows = page.query_selector_all(
+        "#causal-validation-container table.rank-table tbody tr"
+    )
+    validation_names = [r.query_selector_all("td")[0].inner_text() for r in validation_rows]
+    assert {"age", "treated", "outcome", "other"} <= set(validation_names)
+
+    # Root-node row -> observed-vs-sampled histogram in the new modal.
+    treated_validation_row = validation_rows[validation_names.index("treated")]
+    treated_validation_row.click()
+    page.wait_for_selector("#node-plot-modal:not(.hidden)")
+    page.wait_for_selector("#node-plot-modal-body .js-plotly-plot")
+    assert page.inner_text("#node-plot-modal-title") == "treated"
+    page.click('#node-plot-modal [data-close="node-plot-modal"]')
+    # `state="hidden"` explicitly, not the selector-with-class trick
+    # tried first: `#node-plot-modal.hidden` matches an element whose
+    # own CSS (`.modal.hidden { display: none; }`) makes it invisible,
+    # so `wait_for_selector`'s default "visible" wait can never
+    # succeed on it -- caught by CI (this test's first real run),
+    # same class of pitfall `test_left_panel_tabs` above already
+    # works around with its own `state="attached"` note.
+    page.wait_for_selector("#node-plot-modal", state="hidden")
+
+    # Non-root row -> actual-vs-predicted scatter, same modal, reopened
+    # cleanly after the close above.
+    outcome_validation_row = validation_rows[validation_names.index("outcome")]
+    outcome_validation_row.click()
+    page.wait_for_selector("#node-plot-modal:not(.hidden)")
+    page.wait_for_selector("#node-plot-modal-body .js-plotly-plot")
+    assert page.inner_text("#node-plot-modal-title") == "outcome"
+
+    assert console_errors == [], (
+        f"console errors in causal noise/validation panel: {console_errors}"
+    )
 
 
 def test_left_panel_tabs(live_server, page):
