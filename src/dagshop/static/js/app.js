@@ -978,19 +978,21 @@ function buildContributionTable(targetNode, rows) {
 }
 
 // One `evaluation.mechanism_performances` row (server.py's
-// `_serialize_evaluation`) as its display text: root nodes get
-// `kl_divergence` (the observed-vs-sampled check doubles as this
+// `_serialize_evaluation`) as its display text. `crps` is populated
+// for every node (dowhy's own recommended headline metric, per
+// causal_model.py's module docstring) so it always shows; root nodes
+// add `kl_divergence` (the observed-vs-sampled check doubles as this
 // number's sanity check, per SCOPE.md's Decided section), non-root
-// nodes get `r2` and, for a binary-coded node whose held-out split
+// nodes add `r2` and, for a binary-coded node whose held-out split
 // landed both classes, `auc` too.
 function formatMechanismScore(row) {
+  const parts = [row.crps !== null ? `CRPS: ${row.crps.toFixed(3)}` : "CRPS: n/a"];
   if (row.is_root) {
-    return row.kl_divergence !== null
-      ? `KL divergence: ${row.kl_divergence.toFixed(3)}`
-      : "KL divergence: n/a";
+    parts.push(row.kl_divergence !== null ? `KL divergence: ${row.kl_divergence.toFixed(3)}` : "KL divergence: n/a");
+  } else {
+    parts.push(row.r2 !== null ? `R2: ${row.r2.toFixed(3)}` : "R2: n/a");
+    if (row.auc !== null) parts.push(`AUC: ${row.auc.toFixed(3)}`);
   }
-  const parts = [row.r2 !== null ? `R2: ${row.r2.toFixed(3)}` : "R2: n/a"];
-  if (row.auc !== null) parts.push(`AUC: ${row.auc.toFixed(3)}`);
   return parts.join(" · ");
 }
 
