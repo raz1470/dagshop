@@ -773,20 +773,30 @@ function renderCausalBuildResult(result) {
   causalBuildResult.innerHTML = "";
   causalBuildResult.classList.remove("hidden");
 
+  // `result.evaluation` (SCOPE.md build order step 5) replaced the old
+  // `result.falsify` shape: `graph_falsification` is the reduced
+  // falsified/falsifiable/significance_level projection of dowhy's own
+  // evaluation result (see server.py's `_serialize_evaluation`), and
+  // `report` now covers mechanism performance and root-node KL
+  // divergence too, not just the falsification text. This still only
+  // renders the falsification summary/report -- the per-node
+  // R2/CRPS/AUC scores now available on `evaluation.mechanism_performances`,
+  // and the noise dropdown, are step 6 work, not yet built here.
+  const falsification = result.evaluation.graph_falsification;
   const summary = document.createElement("p");
   summary.className = "causal-falsify-summary";
   summary.textContent =
-    `Falsified: ${formatFalsifyBool(result.falsify.falsified)} — falsifiable: ` +
-    `${formatFalsifyBool(result.falsify.falsifiable)} (significance level ${result.falsify.significance_level}).`;
+    `Falsified: ${formatFalsifyBool(falsification.falsified)} — falsifiable: ` +
+    `${formatFalsifyBool(falsification.falsifiable)} (significance level ${falsification.significance_level}).`;
   causalBuildResult.appendChild(summary);
 
   const reportDetails = document.createElement("details");
   const reportSummary = document.createElement("summary");
-  reportSummary.textContent = "Full refutation report";
+  reportSummary.textContent = "Full evaluation report";
   reportDetails.appendChild(reportSummary);
   const pre = document.createElement("pre");
   pre.className = "causal-falsify-report";
-  pre.textContent = result.falsify.report;
+  pre.textContent = result.evaluation.report;
   reportDetails.appendChild(pre);
   causalBuildResult.appendChild(reportDetails);
 
