@@ -416,7 +416,14 @@ def test_causal_noise_dropdown_and_node_validation_plots(live_server, page):
     page.wait_for_selector("#node-plot-modal-body .js-plotly-plot")
     assert page.inner_text("#node-plot-modal-title") == "treated"
     page.click('#node-plot-modal [data-close="node-plot-modal"]')
-    page.wait_for_selector("#node-plot-modal.hidden")
+    # `state="hidden"` explicitly, not the selector-with-class trick
+    # tried first: `#node-plot-modal.hidden` matches an element whose
+    # own CSS (`.modal.hidden { display: none; }`) makes it invisible,
+    # so `wait_for_selector`'s default "visible" wait can never
+    # succeed on it -- caught by CI (this test's first real run),
+    # same class of pitfall `test_left_panel_tabs` above already
+    # works around with its own `state="attached"` note.
+    page.wait_for_selector("#node-plot-modal", state="hidden")
 
     # Non-root row -> actual-vs-predicted scatter, same modal, reopened
     # cleanly after the close above.
