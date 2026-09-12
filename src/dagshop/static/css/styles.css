@@ -290,7 +290,8 @@ button {
   color: var(--color-muted);
 }
 
-#plot-modal-body {
+#plot-modal-body,
+#node-plot-modal-body {
   width: 640px;
   max-width: 100%;
 }
@@ -505,5 +506,57 @@ button {
 }
 
 #causal-contribution-container {
+  font-size: 12px;
+}
+
+/* -- root-node noise + per-node fit validation (SCOPE.md build order step 6) -- */
+
+#causal-noise-section {
+  margin-bottom: 12px;
+}
+
+#causal-noise-section h3 {
+  font-size: 13px;
+  margin: 0 0 4px;
+}
+
+#causal-noise-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--color-muted);
+}
+
+.causal-empty-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--color-muted);
+}
+
+.causal-noise-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.causal-noise-row label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.causal-noise-select {
+  padding: 4px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font: inherit;
+  flex-shrink: 0;
+}
+
+#causal-validation-container {
   font-size: 12px;
 }

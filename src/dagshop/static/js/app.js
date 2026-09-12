@@ -38,12 +38,25 @@ const pathModalCancel = document.getElementById("path-modal-cancel");
 
 const btnCausalBuild = document.getElementById("btn-causal-build");
 const causalBuildResult = document.getElementById("causal-build-result");
+const causalNoiseContainer = document.getElementById("causal-noise-container");
+const causalValidationContainer = document.getElementById("causal-validation-container");
 const causalAttributeControls = document.getElementById("causal-attribute-controls");
 const causalTargetSelect = document.getElementById("causal-target-select");
 const btnCausalAttribute = document.getElementById("btn-causal-attribute");
 const causalContributionContainer = document.getElementById("causal-contribution-container");
 
+const nodePlotModal = document.getElementById("node-plot-modal");
+const nodePlotModalTitle = document.getElementById("node-plot-modal-title");
+const nodePlotModalBody = document.getElementById("node-plot-modal-body");
+
 let cy = null;
+
+// Root-node noise choice for the next `POST /api/causal/build`, keyed by
+// node name (SCOPE.md build order step 6). Module-level so it survives
+// switching away from and back to the "Causal model" tab. A node drops
+// out the next time `renderNoiseDropdowns` runs if it's no longer a root
+// (gained a parent) or no longer exists -- see that function.
+const causalNoiseChoices = {};
 
 // -- API helper -------------------------------------------------------------
 
@@ -754,6 +767,7 @@ function activateTab(name) {
   for (const panel of document.querySelectorAll(".tab-panel")) {
     panel.classList.toggle("hidden", panel.id !== `tab-${name}`);
   }
+  if (name === "causal-model") renderNoiseDropdowns();
 }
 
 function wireTabs() {
@@ -763,6 +777,69 @@ function wireTabs() {
 }
 
 // -- causal attribution panel (SCOPE.md build order step 6) -----------------------
+
+// A root is a node with no incoming edge in the *current* graph, not
+// whatever `dag` looked like at startup -- same "whatever the workshop
+// has edited it to by the time build is clicked" rule server.py's own
+// module docstring already applies to `POST /api/causal/build` itself.
+function currentRootNodes() {
+  return cy
+    .nodes()
+    .filter((node) => node.incomers("edge").length === 0)
+    .map((node) => node.id())
+    .sort();
+}
+
+function renderNoiseDropdowns() {
+  const roots = currentRootNodes();
+  causalNoiseContainer.innerHTML = "";
+
+  if (roots.length === 0) {
+    const hint = document.createElement("p");
+    hint.className = "causal-empty-hint";
+    hint.textContent = "No root nodes yet -- every node has a parent.";
+    causalNoiseContainer.appendChild(hint);
+  }
+
+  for (const node of roots) {
+    if (!(node in causalNoiseChoices)) causalNoiseChoices[node] = "empirical";
+
+    const row = document.createElement("div");
+    row.className = "causal-noise-row";
+
+    const label = document.createElement("label");
+    label.textContent = node;
+    label.title = node;
+    row.appendChild(label);
+
+    const select = document.createElement("select");
+    select.className = "causal-noise-select";
+    for (const [value, text] of [
+      ["empirical", "Empirical"],
+      ["gaussian", "Gaussian"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      select.appendChild(option);
+    }
+    select.value = causalNoiseChoices[node];
+    select.addEventListener("change", () => {
+      causalNoiseChoices[node] = select.value;
+    });
+    row.appendChild(select);
+
+    causalNoiseContainer.appendChild(row);
+  }
+
+  // Drop stale choices for a node that's no longer a root (gained a
+  // parent) or no longer exists: `causal_model.py`'s
+  // `_validate_noise_models` 400s on a non-root entry, and there's no
+  // reason to keep sending a choice for a node that's gone.
+  for (const node of Object.keys(causalNoiseChoices)) {
+    if (!roots.includes(node)) delete causalNoiseChoices[node];
+  }
+}
 
 function formatFalsifyBool(value) {
   if (value === null) return "inconclusive";
@@ -900,6 +977,156 @@ function buildContributionTable(targetNode, rows) {
   return table;
 }
 
+// One `evaluation.mechanism_performances` row (server.py's
+// `_serialize_evaluation`) as its display text: root nodes get
+// `kl_divergence` (the observed-vs-sampled check doubles as this
+// number's sanity check, per SCOPE.md's Decided section), non-root
+// nodes get `r2` and, for a binary-coded node whose held-out split
+// landed both classes, `auc` too.
+function formatMechanismScore(row) {
+  if (row.is_root) {
+    return row.kl_divergence !== null
+      ? `KL divergence: ${row.kl_divergence.toFixed(3)}`
+      : "KL divergence: n/a";
+  }
+  const parts = [row.r2 !== null ? `R2: ${row.r2.toFixed(3)}` : "R2: n/a"];
+  if (row.auc !== null) parts.push(`AUC: ${row.auc.toFixed(3)}`);
+  return parts.join(" · ");
+}
+
+function buildValidationTable(rows) {
+  const table = document.createElement("table");
+  table.className = "rank-table";
+  const caption = document.createElement("caption");
+  caption.textContent = `Per-node fit validation (${rows.length})`;
+  table.appendChild(caption);
+
+  const thead = document.createElement("thead");
+  thead.innerHTML = "<tr><th>Node</th><th>Score</th></tr>";
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(row.node)}</td>
+      <td>${escapeHtml(formatMechanismScore(row))}</td>
+    `;
+    // Opens the new actual-vs-predicted/observed-vs-sampled modal
+    // (SCOPE.md: "a new plot type, not a reuse of the existing
+    // pairwise-association modal"), not `openPlot` above.
+    tr.addEventListener("click", () => openNodePlot(row.node));
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
+function renderCausalValidation(mechanismPerformances) {
+  causalValidationContainer.innerHTML = "";
+  causalValidationContainer.appendChild(buildValidationTable(mechanismPerformances));
+}
+
+// -- node validation plot modal (actual-vs-predicted / observed-vs-sampled) -------
+
+function renderActualVsPredictedPlot(plotDiv, node, data) {
+  const bounds = [...data.actual, ...data.predicted];
+  const lo = Math.min(...bounds);
+  const hi = Math.max(...bounds);
+  const titleSuffix = data.auc !== null ? ` (AUC ${data.auc.toFixed(3)})` : "";
+  Plotly.newPlot(
+    plotDiv,
+    [
+      {
+        x: data.actual,
+        y: data.predicted,
+        mode: "markers",
+        type: "scatter",
+        name: "test-fold predictions",
+        marker: { size: 5, opacity: 0.55, color: "#6b6b76" },
+      },
+      {
+        x: [lo, hi],
+        y: [lo, hi],
+        mode: "lines",
+        type: "scatter",
+        name: "y = x",
+        line: { color: "#2e6bd6", width: 2, dash: "dash" },
+      },
+    ],
+    {
+      title: `${node}: actual vs. predicted${titleSuffix}`,
+      margin: { t: 40, r: 10, b: 40, l: 50 },
+      xaxis: { title: "actual" },
+      yaxis: { title: "predicted" },
+      legend: { orientation: "h", x: 1, xanchor: "right", y: 1, yanchor: "bottom" },
+    },
+    { displaylogo: false, responsive: true },
+  );
+}
+
+// Not row-aligned (see causal_model.py's `ObservedVsSampledPlot`
+// docstring: a root node's noise distribution is unconditional, so
+// there's no per-row pairing) -- rendered as overlaid histograms
+// rather than a scatter, unlike the non-root plot above.
+function renderObservedVsSampledPlot(plotDiv, node, data) {
+  Plotly.newPlot(
+    plotDiv,
+    [
+      {
+        x: data.observed,
+        type: "histogram",
+        name: "observed",
+        opacity: 0.6,
+        marker: { color: "#6b6b76" },
+      },
+      {
+        x: data.sampled,
+        type: "histogram",
+        name: "sampled (fitted noise)",
+        opacity: 0.6,
+        marker: { color: "#2e6bd6" },
+      },
+    ],
+    {
+      title: `${node}: observed vs. sampled noise distribution`,
+      barmode: "overlay",
+      margin: { t: 40, r: 10, b: 40, l: 50 },
+      xaxis: { title: node },
+      yaxis: { title: "count" },
+      legend: { orientation: "h", x: 1, xanchor: "right", y: 1, yanchor: "bottom" },
+    },
+    { displaylogo: false, responsive: true },
+  );
+}
+
+async function openNodePlot(node) {
+  nodePlotModalTitle.textContent = node;
+  nodePlotModalBody.innerHTML = "<p>Loading…</p>";
+  showModal(nodePlotModal);
+  try {
+    const data = await api(`/api/causal/plot/${encodeURIComponent(node)}`);
+    nodePlotModalBody.innerHTML = "";
+    const plotDiv = document.createElement("div");
+    plotDiv.style.width = "100%";
+    plotDiv.style.height = "420px";
+    nodePlotModalBody.appendChild(plotDiv);
+    // No `kind` discriminant field on either shape (see
+    // causal_model.py's docstring): branch on which fields are
+    // present instead, same way the response itself is built.
+    if ("observed" in data) {
+      renderObservedVsSampledPlot(plotDiv, node, data);
+    } else {
+      renderActualVsPredictedPlot(plotDiv, node, data);
+    }
+  } catch (err) {
+    nodePlotModalBody.innerHTML =
+      err.status === 400
+        ? "<p>Causal model not built yet.</p>"
+        : `<p>Could not load plot: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
 async function attributeCausalTarget(targetNode) {
   causalContributionContainer.innerHTML = "<p>Loading…</p>";
   try {
@@ -915,8 +1142,9 @@ async function buildCausalModel() {
   btnCausalBuild.disabled = true;
   btnCausalBuild.textContent = "Building…";
   try {
-    const result = await api("/api/causal/build", "POST");
+    const result = await api("/api/causal/build", "POST", { noise_models: { ...causalNoiseChoices } });
     renderCausalBuildResult(result);
+    renderCausalValidation(result.evaluation.mechanism_performances);
     // Re-fetch the graph rather than trusting a stale module-level
     // copy: `dag.outcomes` isn't held anywhere on the frontend between
     // init() and now, and a node could have been removed in between.
@@ -965,6 +1193,7 @@ async function init() {
     renderDatasetSummary(health);
     renderTables(tables);
     const eh = initCytoscape(graph);
+    renderNoiseDropdowns();
     wireTopbar();
     wireCausalPanel();
     wireTabs();

@@ -52,8 +52,20 @@
               <code>dowhy.gcm</code>'s intrinsic causal influence) &mdash; not a percentage of any
               one row's score.
             </p>
+
+            <div id="causal-noise-section">
+              <h3>Root node noise</h3>
+              <p id="causal-noise-hint">
+                Distribution each root node's mechanism resamples from when the model below is
+                built. "Empirical" resamples the observed column directly; "Gaussian" fits a
+                parametric Normal instead.
+              </p>
+              <div id="causal-noise-container"></div>
+            </div>
+
             <button id="btn-causal-build" type="button">Build causal model</button>
             <div id="causal-build-result" class="hidden"></div>
+            <div id="causal-validation-container"></div>
           </section>
         </div>
 
@@ -84,6 +96,19 @@
         <button class="modal-close" type="button" data-close="plot-modal">&times;</button>
         <h2 id="plot-modal-title"></h2>
         <div id="plot-modal-body"></div>
+      </div>
+    </div>
+
+    <!-- Node validation plot modal: actual-vs-predicted (non-root) or
+         observed-vs-sampled (root) from causal_model.py's build_node_plots,
+         served by GET /api/causal/plot/{node}. A distinct modal from
+         plot-modal above: SCOPE.md's Decided section for this feature
+         treats it as a genuinely different plot type, not a reuse. -->
+    <div id="node-plot-modal" class="modal hidden">
+      <div class="modal-content">
+        <button class="modal-close" type="button" data-close="node-plot-modal">&times;</button>
+        <h2 id="node-plot-modal-title"></h2>
+        <div id="node-plot-modal-body"></div>
       </div>
     </div>
 
