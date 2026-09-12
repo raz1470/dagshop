@@ -362,7 +362,9 @@ def test_causal_noise_dropdown_and_node_validation_plots(live_server, page):
     Wires up one real edge first (`age -> outcome`, "+"), same as
     `test_causal_build_and_attribute_panel` above, so the build has
     both a still-root node ("treated", left at its default) and a
-    non-root one ("outcome") to open a validation plot for.
+    non-root one ("outcome") to open a validation plot for. The edge's
+    source, "age", stays a root itself -- it's "outcome" (the edge's
+    target) that gains a parent and drops out of the noise dropdown.
     """
     console_errors: list[str] = []
 
@@ -379,11 +381,14 @@ def test_causal_noise_dropdown_and_node_validation_plots(live_server, page):
     page.click('[data-tab="causal-model"]')
     page.wait_for_selector("#causal-noise-container .causal-noise-row")
 
-    # "age" now has a parent (the edge just added), so it's no longer a
-    # root and gets no dropdown; "treated" and "other" still are.
+    # "outcome" now has a parent (the edge just added), so it's no
+    # longer a root and gets no dropdown; "age" (the edge's source, not
+    # its target) keeps no parent of its own and stays a root, same as
+    # "treated" and "other", which the edge never touched.
     noise_rows = page.query_selector_all("#causal-noise-container .causal-noise-row")
     noise_labels = [r.query_selector("label").inner_text() for r in noise_rows]
-    assert "age" not in noise_labels
+    assert "outcome" not in noise_labels
+    assert "age" in noise_labels
     assert "treated" in noise_labels
     assert "other" in noise_labels
 
