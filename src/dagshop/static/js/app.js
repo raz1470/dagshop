@@ -49,6 +49,13 @@ const nodePlotModal = document.getElementById("node-plot-modal");
 const nodePlotModalTitle = document.getElementById("node-plot-modal-title");
 const nodePlotModalBody = document.getElementById("node-plot-modal-body");
 
+const causalInterveneControls = document.getElementById("causal-intervene-controls");
+const causalInterveneNodeSelect = document.getElementById("causal-intervene-node-select");
+const causalInterveneValueContainer = document.getElementById("causal-intervene-value-container");
+const causalInterveneTargetSelect = document.getElementById("causal-intervene-target-select");
+const btnCausalIntervene = document.getElementById("btn-causal-intervene");
+const causalInterveneResult = document.getElementById("causal-intervene-result");
+
 let cy = null;
 
 // Root-node noise choice for the next `POST /api/causal/build`, keyed by
@@ -57,6 +64,21 @@ let cy = null;
 // out the next time `renderNoiseDropdowns` runs if it's no longer a root
 // (gained a parent) or no longer exists -- see that function.
 const causalNoiseChoices = {};
+
+// Per-node descriptive stats from the last build's `node_stats`
+// (server.py: `is_binary` + observed `mean`, keyed by node name) --
+// used only by the interventions panel below to pick a value input
+// type and pre-fill it. Empty until the first successful build.
+let causalNodeStats = {};
+
+// The last-fetched graph's edges (`{source, target, sign}`, same shape
+// `GET /api/graph` returns): kept so the interventions panel can
+// compute a node's descendants client-side rather than adding a
+// server endpoint for it (SCOPE.md's Decided section notes
+// `networkx.descendants` gives the same set `interventional_samples`
+// itself already uses -- the frontend just needs the edge list to do
+// the equivalent BFS in JS).
+let causalGraphEdges = [];
 
 // -- API helper -------------------------------------------------------------
 
@@ -1132,6 +1154,156 @@ async function openNodePlot(node) {
   }
 }
 
+// -- interventions panel (SCOPE.md "Causal impact tab: interventions") ------
+
+// BFS over `edges` ({source, target} pairs, same shape `GET /api/graph`
+// returns) for every strict descendant of `node` -- the frontend's own
+// equivalent of `networkx.descendants(fitted.scm.graph, node)`, which
+// causal_model.py's `intervene` uses server-side for the same
+// ancestor/tautology guard (see that function's docstring). Done here
+// rather than added as a server field, since the frontend already has
+// the whole edge list from the graph it fetched for Cytoscape.
+function descendantsOf(node, edges) {
+  const children = {};
+  for (const edge of edges) {
+    if (!children[edge.source]) children[edge.source] = [];
+    children[edge.source].push(edge.target);
+  }
+  const seen = new Set();
+  const stack = [...(children[node] || [])];
+  while (stack.length) {
+    const next = stack.pop();
+    if (seen.has(next)) continue;
+    seen.add(next);
+    stack.push(...(children[next] || []));
+  }
+  return seen;
+}
+
+// A binary-coded node (server.py's `node_stats[node].is_binary`) gets
+// a two-button {0, 1} toggle instead of a free numeric field -- SCOPE.md's
+// Decided section: "a binary-coded (0/1 numeric) node gets a two-option
+// choice restricted to {0, 1}." A continuous node gets a plain number
+// input pre-filled with its observed mean, a reasonable starting point
+// rather than leaving it blank or defaulting to 0 (which may be nowhere
+// near the node's real range).
+function renderInterveneValueInput(node) {
+  causalInterveneValueContainer.innerHTML = "";
+  const stats = causalNodeStats[node];
+  if (stats && stats.is_binary) {
+    const row = document.createElement("div");
+    row.className = "causal-intervene-toggle";
+    for (const choice of [0, 1]) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = String(choice);
+      btn.dataset.value = String(choice);
+      if (choice === 0) btn.classList.add("active");
+      btn.addEventListener("click", () => {
+        row.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+      });
+      row.appendChild(btn);
+    }
+    causalInterveneValueContainer.appendChild(row);
+  } else {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "any";
+    if (stats) input.value = stats.mean;
+    causalInterveneValueContainer.appendChild(input);
+  }
+}
+
+function readInterveneValue() {
+  const toggle = causalInterveneValueContainer.querySelector(".causal-intervene-toggle");
+  if (toggle) {
+    const active = toggle.querySelector("button.active");
+    return active ? Number(active.dataset.value) : 0;
+  }
+  const input = causalInterveneValueContainer.querySelector("input");
+  return input ? Number(input.value) : NaN;
+}
+
+function populateInterveneNodeSelect(nodes) {
+  causalInterveneNodeSelect.innerHTML = "";
+  for (const name of nodes) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    causalInterveneNodeSelect.appendChild(option);
+  }
+}
+
+// Restricted to `node`'s descendants only (SCOPE.md's Decided section:
+// an ancestor or unrelated node cannot change under do() by definition,
+// and the intervened node itself would trivially just equal the chosen
+// value -- see causal_model.py's `intervene` docstring for the same
+// guard enforced server-side). A node with no descendants (a leaf)
+// disables the run button rather than submitting a request the server
+// would 400 on.
+function populateInterveneTargetSelect(node) {
+  causalInterveneTargetSelect.innerHTML = "";
+  const descendants = [...descendantsOf(node, causalGraphEdges)].sort();
+  if (descendants.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "(no descendants)";
+    causalInterveneTargetSelect.appendChild(option);
+    btnCausalIntervene.disabled = true;
+    return;
+  }
+  for (const name of descendants) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    causalInterveneTargetSelect.appendChild(option);
+  }
+  btnCausalIntervene.disabled = false;
+}
+
+function onInterveneNodeChange() {
+  const node = causalInterveneNodeSelect.value;
+  renderInterveneValueInput(node);
+  populateInterveneTargetSelect(node);
+}
+
+function formatInterveneNumber(value) {
+  return Number.isFinite(value) ? value.toFixed(3) : "n/a";
+}
+
+async function runIntervention() {
+  const node = causalInterveneNodeSelect.value;
+  const target = causalInterveneTargetSelect.value;
+  const value = readInterveneValue();
+  if (!node || !target || Number.isNaN(value)) return;
+  btnCausalIntervene.disabled = true;
+  btnCausalIntervene.textContent = "Running…";
+  try {
+    const result = await api("/api/causal/intervene", "POST", { node, value, target });
+    const pct =
+      result.percent_change !== null ? `${(result.percent_change * 100).toFixed(1)}%` : "n/a";
+    causalInterveneResult.innerHTML = `
+      <div class="causal-intervene-summary">
+        <div><span>Baseline mean (${escapeHtml(target)})</span><span>${formatInterveneNumber(result.baseline_mean)}</span></div>
+        <div><span>Intervened mean</span><span>${formatInterveneNumber(result.intervened_mean)}</span></div>
+        <div><span>Absolute change</span><span>${formatInterveneNumber(result.absolute_change)}</span></div>
+        <div><span>Percent change</span><span>${pct}</span></div>
+      </div>
+    `;
+  } catch (err) {
+    causalInterveneResult.innerHTML = `<p>Could not run intervention: ${escapeHtml(err.message)}</p>`;
+  } finally {
+    btnCausalIntervene.disabled = false;
+    btnCausalIntervene.textContent = "Run intervention";
+  }
+}
+
+function wireInterveneControls() {
+  causalInterveneNodeSelect.addEventListener("change", onInterveneNodeChange);
+  btnCausalIntervene.addEventListener("click", runIntervention);
+}
+
 async function attributeCausalTarget(targetNode) {
   causalContributionContainer.innerHTML = "<p>Loading…</p>";
   try {
@@ -1157,6 +1329,13 @@ async function buildCausalModel() {
     const preferredDefault = graph.outcomes[0] || result.attributable_nodes[0];
     populateCausalTargetSelect(result.attributable_nodes, preferredDefault);
     causalAttributeControls.classList.remove("hidden");
+
+    causalNodeStats = result.node_stats || {};
+    causalGraphEdges = graph.edges;
+    populateInterveneNodeSelect(result.attributable_nodes);
+    causalInterveneResult.innerHTML = "";
+    if (causalInterveneNodeSelect.value) onInterveneNodeChange();
+    causalInterveneControls.classList.remove("hidden");
     // Deliberately does not switch tabs here. The falsification result
     // just rendered above lives on the "Causal model" tab (where the
     // user already is, having just clicked Build), and auto-switching
@@ -1184,6 +1363,7 @@ function wireCausalPanel() {
   btnCausalAttribute.addEventListener("click", () => {
     if (causalTargetSelect.value) attributeCausalTarget(causalTargetSelect.value);
   });
+  wireInterveneControls();
 }
 
 // -- init ------------------------------------------------------------------------

@@ -42,6 +42,14 @@ scatter alike. Same bridge limitation as the two tests above.
 tab split of `#left-panel`: clicking a tab shows only that tab's panel,
 and the canvas (which lives outside `#left-panel`) stays visible and
 its nodes stay clickable regardless of which tab is active.
+
+`test_causal_intervene_panel` (SCOPE.md's "Causal impact tab:
+interventions" section) covers the new panel below the attribution
+table: the node picker, the value input switching to a binary toggle
+for a 0/1-coded node, the target picker restricted to that node's
+descendants, and the rendered baseline/intervened-mean result. Same
+bridge limitation as the causal-panel tests above -- validated by
+static reading only here, real signal from CI.
 """
 
 from __future__ import annotations
@@ -436,6 +444,56 @@ def test_causal_noise_dropdown_and_node_validation_plots(live_server, page):
     assert console_errors == [], (
         f"console errors in causal noise/validation panel: {console_errors}"
     )
+
+
+def test_causal_intervene_panel(live_server, page):
+    """SCOPE.md's "Causal impact tab: interventions" build order step 4.
+
+    Wires up `treated -> outcome` ("+") so `treated` (binary, 0/1-coded
+    in the `live_server` fixture) has exactly one descendant,
+    `outcome` -- the interventions panel's target picker should offer
+    only that one. Picking `treated` as the intervened node should
+    switch the value input to the {0, 1} toggle (see app.js's
+    `renderInterveneValueInput`), not a free numeric field, since
+    `node_stats` marks it `is_binary`.
+    """
+    console_errors: list[str] = []
+
+    page.goto(live_server)
+    page.wait_for_selector("#cy canvas")
+
+    _post_json(f"{live_server}/api/edges", {"source": "treated", "target": "outcome", "sign": "+"})
+    page.reload()
+    page.wait_for_selector("#cy canvas")
+
+    page.on("console", lambda msg: msg.type == "error" and console_errors.append(msg.text))
+    page.on("pageerror", lambda exc: console_errors.append(str(exc)))
+
+    page.click('[data-tab="causal-model"]')
+    page.click("#btn-causal-build")
+    page.wait_for_selector("#causal-build-result:not(.hidden)")
+
+    page.click('[data-tab="causal-impact"]')
+    page.wait_for_selector("#causal-intervene-controls:not(.hidden)")
+
+    page.select_option("#causal-intervene-node-select", "treated")
+    page.wait_for_selector("#causal-intervene-value-container .causal-intervene-toggle")
+
+    target_options = page.eval_on_selector_all(
+        "#causal-intervene-target-select option", "opts => opts.map(o => o.value)"
+    )
+    assert target_options == ["outcome"]
+
+    page.click('#causal-intervene-value-container button:text("1")')
+    page.click("#btn-causal-intervene")
+
+    page.wait_for_selector("#causal-intervene-result .causal-intervene-summary")
+    result_text = page.inner_text("#causal-intervene-result")
+    assert "Baseline mean" in result_text
+    assert "Intervened mean" in result_text
+    assert "Percent change" in result_text
+
+    assert console_errors == [], f"console errors in interventions panel: {console_errors}"
 
 
 def test_left_panel_tabs(live_server, page):

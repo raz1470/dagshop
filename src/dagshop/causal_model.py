@@ -362,6 +362,35 @@ class AttributionResult:
 
 
 @dataclass(frozen=True)
+class InterventionResult:
+    """Result of `do(node := value)`, compared against the real observed `target` column.
+
+    SCOPE.md's "Causal impact tab: interventions" Decided section: the
+    baseline is the real observed `target` column's mean, not a second
+    synthetic draw, so `intervene` only needs one input value (`value`)
+    rather than the two an A-vs-B (`do(X:=A)` vs `do(X:=B)`) comparison
+    would need. `intervened_mean` comes from
+    `gcm.interventional_samples(scm, {node: lambda x: value},
+    observed_data=data)`: it recomputes only `target` and every other
+    descendant of `node`, leaving every other column (`node`'s own
+    ancestors included) at its real observed value for the same rows.
+
+    `percent_change` is `None` when `baseline_mean` is within `1e-9` of
+    zero: a percent change against a near-zero baseline is not a
+    meaningful number (it blows up or flips sign for a tiny, noise-sized
+    shift in the denominator), not a genuinely large effect.
+    """
+
+    node: str
+    value: float
+    target: str
+    baseline_mean: float
+    intervened_mean: float
+    absolute_change: float
+    percent_change: float | None
+
+
+@dataclass(frozen=True)
 class MechanismPerformance:
     """One node's per-mechanism evaluation from `dowhy.gcm.evaluate_causal_model`.
 
@@ -633,6 +662,71 @@ def attribute_target(
         )
         for node, value in ranked
     ]
+
+
+def intervene(
+    fitted: FittedCausalModel,
+    data: pd.DataFrame,
+    node: str,
+    value: float,
+    target: str,
+) -> InterventionResult:
+    """`do(node := value)`, comparing `target`'s mean before and after.
+
+    SCOPE.md's "Causal impact tab: interventions" build order step 1.
+    Baseline is `target`'s real observed mean, over the same joint-
+    `dropna`'d rows `fit_causal_model`/`evaluate_causal_model`/
+    `build_node_plots` all already use (see module docstring's joint-
+    `dropna` note). The intervened mean comes from
+    `gcm.interventional_samples(fitted.scm, {node: lambda x: value},
+    observed_data=data)`, which recomputes only `target` and every
+    other descendant of `node`, leaving every other column (including
+    `node`'s own ancestors) at its real observed value for the same
+    rows.
+
+    Raises `KeyError` for an unknown `node`/`target` (same pattern as
+    `attribute_target`), and `ValueError` if `target` is not a strict
+    descendant of `node`: an ancestor or unrelated node cannot change
+    under `do()` by definition, and `target == node` would trivially
+    just equal `value` (see SCOPE.md's Decided section on why the
+    frontend's own target dropdown is restricted to `node`'s
+    descendants). Descendants are read off `fitted.scm.graph`, not
+    `fitted.dag.graph`, matching `_node_prediction_model`'s and
+    `build_node_plots`' own precedent: this reflects what was actually
+    fit even if `fitted.dag` has since been edited (this repo does not
+    auto-invalidate a build's cache on a later graph edit).
+    """
+    if node not in fitted.dag.nodes:
+        raise KeyError(f"no node {node!r}")
+    if target not in fitted.dag.nodes:
+        raise KeyError(f"no node {target!r}")
+    descendants = nx.descendants(fitted.scm.graph, node)
+    if target not in descendants:
+        raise ValueError(
+            f"{target!r} is not a descendant of {node!r} -- "
+            "do() cannot change a node's ancestors or unrelated nodes"
+        )
+
+    eval_data = data[fitted.dag.nodes].dropna()
+    baseline_mean = float(eval_data[target].mean())
+
+    samples = gcm.interventional_samples(
+        fitted.scm, {node: lambda x: value}, observed_data=eval_data
+    )
+    intervened_mean = float(samples[target].mean())
+
+    absolute_change = intervened_mean - baseline_mean
+    percent_change = absolute_change / abs(baseline_mean) if abs(baseline_mean) > 1e-9 else None
+
+    return InterventionResult(
+        node=node,
+        value=value,
+        target=target,
+        baseline_mean=baseline_mean,
+        intervened_mean=intervened_mean,
+        absolute_change=absolute_change,
+        percent_change=percent_change,
+    )
 
 
 def evaluate_causal_model(

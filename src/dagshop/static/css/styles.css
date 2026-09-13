@@ -560,3 +560,104 @@ button {
 #causal-validation-container {
   font-size: 12px;
 }
+
+/* -- interventions panel (SCOPE.md "Causal impact tab: interventions") -- */
+
+#causal-intervene-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+#causal-intervene-section h3 {
+  font-size: 13px;
+  margin: 0 0 4px;
+}
+
+#causal-intervene-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--color-muted);
+}
+
+#causal-intervene-controls {
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+#causal-intervene-controls.hidden {
+  display: none;
+}
+
+#causal-intervene-controls label {
+  display: block;
+  margin: 8px 0 4px;
+  color: var(--color-muted);
+}
+
+#causal-intervene-controls label:first-child {
+  margin-top: 0;
+}
+
+#causal-intervene-node-select,
+#causal-intervene-target-select,
+#causal-intervene-value-container input[type="number"] {
+  width: 100%;
+  padding: 5px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font: inherit;
+}
+
+.causal-intervene-toggle {
+  display: flex;
+  gap: 6px;
+}
+
+.causal-intervene-toggle button {
+  flex: 1;
+  padding: 5px 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-panel);
+  border-radius: 4px;
+}
+
+.causal-intervene-toggle button.active {
+  background: #2e6bd6;
+  color: #fff;
+  border-color: #2e6bd6;
+}
+
+#btn-causal-intervene {
+  margin-top: 10px;
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-panel);
+  border-radius: 4px;
+}
+
+#btn-causal-intervene:hover {
+  background: #f0f0f3;
+}
+
+#btn-causal-intervene:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+#causal-intervene-result {
+  font-size: 12px;
+}
+
+.causal-intervene-summary {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 8px;
+  margin-top: 4px;
+}
+
+.causal-intervene-summary div {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+}

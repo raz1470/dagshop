@@ -41,6 +41,7 @@ from dagshop.associate import ColumnTypeError
 from dagshop.causal_model import (
     ActualVsPredictedPlot,
     AttributionResult,
+    InterventionResult,
     MechanismPerformance,
     ModelEvaluation,
     ObservedVsSampledPlot,
@@ -52,6 +53,7 @@ from dagshop.causal_model import (
     build_node_plots,
     evaluate_causal_model,
     fit_causal_model,
+    intervene,
 )
 from dagshop.graph import DAGModel, GraphValidationError
 
@@ -375,6 +377,101 @@ def test_attribute_target_random_state_is_reproducible() -> None:
     first = attribute_target(fitted, "target", **kwargs)
     second = attribute_target(fitted, "target", **kwargs)
     assert [r.contribution for r in first] == [r.contribution for r in second]
+
+
+# -- interventions --------------------------------------------------------------
+
+
+def test_intervene_unknown_node_raises_key_error() -> None:
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    with pytest.raises(KeyError, match="nope"):
+        intervene(fitted, data, "nope", 1.0, "target")
+
+
+def test_intervene_unknown_target_raises_key_error() -> None:
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    with pytest.raises(KeyError, match="nope"):
+        intervene(fitted, data, "root", 1.0, "nope")
+
+
+def test_intervene_non_descendant_target_raises_value_error() -> None:
+    """`target` must be a strict descendant of `node`: an ancestor
+    cannot change under `do()` by definition (see causal_model.py's
+    `intervene` docstring)."""
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    with pytest.raises(ValueError, match="not a descendant"):
+        intervene(fitted, data, "target", 1.0, "root")
+
+
+def test_intervene_node_as_its_own_target_raises_value_error() -> None:
+    """A node is not its own descendant, so `target == node` hits the
+    same guard as an ancestor target: both would be a no-op or a
+    tautology (see docstring)."""
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    with pytest.raises(ValueError, match="not a descendant"):
+        intervene(fitted, data, "mid", 1.0, "mid")
+
+
+def test_intervene_moves_target_in_asserted_direction() -> None:
+    """root -> mid -> target, both edges "+" (see
+    `_root_mid_target_dag_and_data`): pushing `root` well above its
+    observed range should raise `target`'s mean, not lower it -- the
+    regressor's own `monotonic_cst` hard-enforces the asserted sign
+    (see causal_model.py's module docstring), so this holds robustly,
+    not just on average."""
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    result = intervene(fitted, data, "root", 8.0, "target")
+    assert isinstance(result, InterventionResult)
+    assert result.node == "root"
+    assert result.target == "target"
+    assert result.value == 8.0
+    assert result.intervened_mean > result.baseline_mean
+    assert result.absolute_change == pytest.approx(result.intervened_mean - result.baseline_mean)
+
+
+def test_intervene_percent_change_is_absolute_change_over_baseline() -> None:
+    dag, data = _root_mid_target_dag_and_data()
+    fitted = _fit(dag, data)
+    result = intervene(fitted, data, "root", 5.0, "target")
+    assert result.baseline_mean != pytest.approx(0.0)
+    assert result.percent_change == pytest.approx(
+        result.absolute_change / abs(result.baseline_mean)
+    )
+
+
+def test_intervene_percent_change_is_none_for_near_zero_baseline() -> None:
+    """A near-zero baseline mean makes percent change meaningless (see
+    `InterventionResult`'s docstring): `target` recentered to a ~zero
+    mean rather than reaching for an unrelated fixture."""
+    dag, data = _root_mid_target_dag_and_data()
+    data = data.copy()
+    data["target"] = data["target"] - data["target"].mean()
+    fitted = _fit(dag, data)
+    result = intervene(fitted, data, "root", 0.0, "target")
+    assert result.baseline_mean == pytest.approx(0.0, abs=1e-9)
+    assert result.percent_change is None
+
+
+def test_intervene_csat_scenario_age_lowers_csat() -> None:
+    """`age -> csat` is a direct, "-" edge in the CSAT scenario (see
+    `_csat_dag` above), and `age` has no other outgoing edge, so `csat`
+    is its only descendant -- a clean single-hop check against real
+    demo data, not just the small hand-built fixture the rest of this
+    file uses."""
+    from dagshop.demo_data import make_csat_demo_data
+
+    data = make_csat_demo_data(n_rows=250, random_state=0)
+    dag = _csat_dag()
+    fitted = _fit(dag, data)
+
+    high_age = float(data["age"].max() + 5 * data["age"].std())
+    result = intervene(fitted, data, "age", high_age, "csat")
+    assert result.intervened_mean < result.baseline_mean
 
 
 # -- private-helper branch coverage ----------------------------------------------
