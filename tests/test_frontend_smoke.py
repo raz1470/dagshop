@@ -447,15 +447,20 @@ def test_causal_noise_dropdown_and_node_validation_plots(live_server, page):
 
 
 def test_causal_intervene_panel(live_server, page):
-    """SCOPE.md's "Causal impact tab: interventions" build order step 4.
+    """SCOPE.md's "Causal impact tab: interventions" build order step 4,
+    updated for the v2 two-value comparison ("Revised: v2, two-value
+    comparison"): v1's single "Value" input is now "From"/"To", each
+    its own container.
 
     Wires up `treated -> outcome` ("+") so `treated` (binary, 0/1-coded
     in the `live_server` fixture) has exactly one descendant,
     `outcome` -- the interventions panel's target picker should offer
     only that one. Picking `treated` as the intervened node should
-    switch the value input to the {0, 1} toggle (see app.js's
+    switch both value inputs to {0, 1} toggles (see app.js's
     `renderInterveneValueInput`), not a free numeric field, since
-    `node_stats` marks it `is_binary`.
+    `node_stats` marks it `is_binary` -- defaulting to 0 for "from" and
+    1 for "to" (app.js's own default), so this test only needs to
+    click the run button, not pick either toggle value itself.
     """
     console_errors: list[str] = []
 
@@ -477,20 +482,25 @@ def test_causal_intervene_panel(live_server, page):
     page.wait_for_selector("#causal-intervene-controls:not(.hidden)")
 
     page.select_option("#causal-intervene-node-select", "treated")
-    page.wait_for_selector("#causal-intervene-value-container .causal-intervene-toggle")
+    page.wait_for_selector("#causal-intervene-from-container .causal-intervene-toggle")
+    page.wait_for_selector("#causal-intervene-to-container .causal-intervene-toggle")
 
     target_options = page.eval_on_selector_all(
         "#causal-intervene-target-select option", "opts => opts.map(o => o.value)"
     )
     assert target_options == ["outcome"]
 
-    page.click('#causal-intervene-value-container button:text("1")')
+    # Both toggles already default to a real (from=0, to=1) pair -- see
+    # app.js's `renderInterveneValueInput` -- so running the
+    # intervention doesn't need either one clicked first, unlike v1's
+    # single toggle (which defaulted to 0 and needed an explicit click
+    # to "1" to test a real change).
     page.click("#btn-causal-intervene")
 
     page.wait_for_selector("#causal-intervene-result .causal-intervene-summary")
     result_text = page.inner_text("#causal-intervene-result")
-    assert "Baseline mean" in result_text
-    assert "Intervened mean" in result_text
+    assert "From mean" in result_text
+    assert "To mean" in result_text
     assert "Percent change" in result_text
 
     assert console_errors == [], f"console errors in interventions panel: {console_errors}"

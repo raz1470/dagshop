@@ -597,7 +597,10 @@ def test_build_causal_model_includes_node_stats(client, sequential_gcm_jobs):
 
 
 def test_intervene_before_build_is_400(client):
-    resp = client.post("/api/causal/intervene", json={"node": "a", "value": 1.0, "target": "b"})
+    resp = client.post(
+        "/api/causal/intervene",
+        json={"node": "a", "from_value": 0.0, "to_value": 1.0, "target": "b"},
+    )
     assert resp.status_code == 400
     assert "build" in resp.json()["detail"]
 
@@ -606,20 +609,27 @@ def test_intervene_after_build(client, sequential_gcm_jobs):
     build_resp = _build_chain(client)
     assert build_resp.status_code == 200
 
-    resp = client.post("/api/causal/intervene", json={"node": "a", "value": 10.0, "target": "c"})
+    resp = client.post(
+        "/api/causal/intervene",
+        json={"node": "a", "from_value": 0.0, "to_value": 10.0, "target": "c"},
+    )
     assert resp.status_code == 200
     body = resp.json()
     assert body["node"] == "a"
     assert body["target"] == "c"
-    assert body["value"] == 10.0
-    assert isinstance(body["baseline_mean"], float)
-    assert isinstance(body["intervened_mean"], float)
-    assert body["absolute_change"] == pytest.approx(body["intervened_mean"] - body["baseline_mean"])
+    assert body["from_value"] == 0.0
+    assert body["to_value"] == 10.0
+    assert isinstance(body["from_mean"], float)
+    assert isinstance(body["to_mean"], float)
+    assert body["absolute_change"] == pytest.approx(body["to_mean"] - body["from_mean"])
 
 
 def test_intervene_unknown_node_is_404(client, sequential_gcm_jobs):
     _build_chain(client)
-    resp = client.post("/api/causal/intervene", json={"node": "nope", "value": 1.0, "target": "c"})
+    resp = client.post(
+        "/api/causal/intervene",
+        json={"node": "nope", "from_value": 0.0, "to_value": 1.0, "target": "c"},
+    )
     assert resp.status_code == 404
 
 
@@ -628,7 +638,10 @@ def test_intervene_non_descendant_target_is_400(client, sequential_gcm_jobs):
     # "a" is an ancestor of "c" ("a -> b -> c"), not a descendant --
     # do() cannot change a node's own ancestors (causal_model.py's
     # `intervene` docstring).
-    resp = client.post("/api/causal/intervene", json={"node": "c", "value": 1.0, "target": "a"})
+    resp = client.post(
+        "/api/causal/intervene",
+        json={"node": "c", "from_value": 0.0, "to_value": 1.0, "target": "a"},
+    )
     assert resp.status_code == 400
 
 

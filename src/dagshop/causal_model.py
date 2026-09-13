@@ -363,29 +363,40 @@ class AttributionResult:
 
 @dataclass(frozen=True)
 class InterventionResult:
-    """Result of `do(node := value)`, compared against the real observed `target` column.
+    """Result of `do(node := from_value)` vs `do(node := to_value)`, both synthetic.
 
-    SCOPE.md's "Causal impact tab: interventions" Decided section: the
-    baseline is the real observed `target` column's mean, not a second
-    synthetic draw, so `intervene` only needs one input value (`value`)
-    rather than the two an A-vs-B (`do(X:=A)` vs `do(X:=B)`) comparison
-    would need. `intervened_mean` comes from
-    `gcm.interventional_samples(scm, {node: lambda x: value},
-    observed_data=data)`: it recomputes only `target` and every other
-    descendant of `node`, leaving every other column (`node`'s own
-    ancestors included) at its real observed value for the same rows.
+    SCOPE.md's "Causal impact tab: interventions" v2 revision
+    ("Revised: v2, two-value comparison"): v1 compared a single
+    `do(node := value)` draw against the real observed `target` column,
+    which turned out not to be a useful comparison in practice (mixes
+    every historical value of `node`, not a clean baseline to contrast
+    a specific hypothetical against). v2 is exactly `gcm.
+    average_causal_effect`'s own ACE framing -- `ACE = E[Y |
+    do(T:=alternative)] - E[Y | do(T:=reference)]` (checked directly
+    against the installed `dowhy` version's source) -- but computed as
+    two calls to `gcm.interventional_samples` rather than one call to
+    `average_causal_effect` itself, since that function only returns
+    the single difference and this module's own pattern already
+    reports both means plus the diff. Both `from_mean` and `to_mean`
+    come from `gcm.interventional_samples(scm, {node: lambda x: ...},
+    observed_data=data)`, one call per value: each recomputes only
+    `target` and every other descendant of `node`, leaving every other
+    column (`node`'s own ancestors included) at its real observed
+    value for the same rows -- neither draw touches the real observed
+    `target` column at all now.
 
-    `percent_change` is `None` when `baseline_mean` is within `1e-9` of
-    zero: a percent change against a near-zero baseline is not a
+    `percent_change` is `None` when `from_mean` is within `1e-9` of
+    zero: a percent change against a near-zero denominator is not a
     meaningful number (it blows up or flips sign for a tiny, noise-sized
     shift in the denominator), not a genuinely large effect.
     """
 
     node: str
-    value: float
+    from_value: float
+    to_value: float
     target: str
-    baseline_mean: float
-    intervened_mean: float
+    from_mean: float
+    to_mean: float
     absolute_change: float
     percent_change: float | None
 
@@ -668,30 +679,32 @@ def intervene(
     fitted: FittedCausalModel,
     data: pd.DataFrame,
     node: str,
-    value: float,
+    from_value: float,
+    to_value: float,
     target: str,
 ) -> InterventionResult:
-    """`do(node := value)`, comparing `target`'s mean before and after.
+    """`do(node := from_value)` vs `do(node := to_value)`, comparing `target`'s mean.
 
-    SCOPE.md's "Causal impact tab: interventions" build order step 1.
-    Baseline is `target`'s real observed mean, over the same joint-
+    SCOPE.md's "Causal impact tab: interventions" v2 build order step 1
+    (v1's single-`value` build order step 1 above it is superseded by
+    this signature -- see module docstring). Both means come from
+    `gcm.interventional_samples(fitted.scm, {node: lambda x: ...},
+    observed_data=data)`, one call per value, over the same joint-
     `dropna`'d rows `fit_causal_model`/`evaluate_causal_model`/
     `build_node_plots` all already use (see module docstring's joint-
-    `dropna` note). The intervened mean comes from
-    `gcm.interventional_samples(fitted.scm, {node: lambda x: value},
-    observed_data=data)`, which recomputes only `target` and every
-    other descendant of `node`, leaving every other column (including
+    `dropna` note). Each call recomputes only `target` and every other
+    descendant of `node`, leaving every other column (including
     `node`'s own ancestors) at its real observed value for the same
-    rows.
+    rows -- neither call touches the real observed `target` column.
 
     Raises `KeyError` for an unknown `node`/`target` (same pattern as
     `attribute_target`), and `ValueError` if `target` is not a strict
     descendant of `node`: an ancestor or unrelated node cannot change
     under `do()` by definition, and `target == node` would trivially
-    just equal `value` (see SCOPE.md's Decided section on why the
-    frontend's own target dropdown is restricted to `node`'s
-    descendants). Descendants are read off `fitted.scm.graph`, not
-    `fitted.dag.graph`, matching `_node_prediction_model`'s and
+    just equal whichever value was asked about (see SCOPE.md's Decided
+    section on why the frontend's own target dropdown is restricted to
+    `node`'s descendants). Descendants are read off `fitted.scm.graph`,
+    not `fitted.dag.graph`, matching `_node_prediction_model`'s and
     `build_node_plots`' own precedent: this reflects what was actually
     fit even if `fitted.dag` has since been edited (this repo does not
     auto-invalidate a build's cache on a later graph edit).
@@ -708,22 +721,27 @@ def intervene(
         )
 
     eval_data = data[fitted.dag.nodes].dropna()
-    baseline_mean = float(eval_data[target].mean())
 
-    samples = gcm.interventional_samples(
-        fitted.scm, {node: lambda x: value}, observed_data=eval_data
+    from_samples = gcm.interventional_samples(
+        fitted.scm, {node: lambda x: from_value}, observed_data=eval_data
     )
-    intervened_mean = float(samples[target].mean())
+    from_mean = float(from_samples[target].mean())
 
-    absolute_change = intervened_mean - baseline_mean
-    percent_change = absolute_change / abs(baseline_mean) if abs(baseline_mean) > 1e-9 else None
+    to_samples = gcm.interventional_samples(
+        fitted.scm, {node: lambda x: to_value}, observed_data=eval_data
+    )
+    to_mean = float(to_samples[target].mean())
+
+    absolute_change = to_mean - from_mean
+    percent_change = absolute_change / abs(from_mean) if abs(from_mean) > 1e-9 else None
 
     return InterventionResult(
         node=node,
-        value=value,
+        from_value=from_value,
+        to_value=to_value,
         target=target,
-        baseline_mean=baseline_mean,
-        intervened_mean=intervened_mean,
+        from_mean=from_mean,
+        to_mean=to_mean,
         absolute_change=absolute_change,
         percent_change=percent_change,
     )

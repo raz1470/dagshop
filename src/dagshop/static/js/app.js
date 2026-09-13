@@ -51,7 +51,8 @@ const nodePlotModalBody = document.getElementById("node-plot-modal-body");
 
 const causalInterveneControls = document.getElementById("causal-intervene-controls");
 const causalInterveneNodeSelect = document.getElementById("causal-intervene-node-select");
-const causalInterveneValueContainer = document.getElementById("causal-intervene-value-container");
+const causalInterveneFromContainer = document.getElementById("causal-intervene-from-container");
+const causalInterveneToContainer = document.getElementById("causal-intervene-to-container");
 const causalInterveneTargetSelect = document.getElementById("causal-intervene-target-select");
 const btnCausalIntervene = document.getElementById("btn-causal-intervene");
 const causalInterveneResult = document.getElementById("causal-intervene-result");
@@ -1180,48 +1181,54 @@ function descendantsOf(node, edges) {
   return seen;
 }
 
-// A binary-coded node (server.py's `node_stats[node].is_binary`) gets
-// a two-button {0, 1} toggle instead of a free numeric field -- SCOPE.md's
-// Decided section: "a binary-coded (0/1 numeric) node gets a two-option
-// choice restricted to {0, 1}." A continuous node gets a plain number
-// input pre-filled with its observed mean, a reasonable starting point
-// rather than leaving it blank or defaulting to 0 (which may be nowhere
-// near the node's real range).
-function renderInterveneValueInput(node) {
-  causalInterveneValueContainer.innerHTML = "";
+// A binary-coded node (server.py's `node_stats[node].is_binary`) gets a
+// two-button {0, 1} toggle instead of a free numeric field -- SCOPE.md's
+// v1 Decided section: "a binary-coded (0/1 numeric) node gets a
+// two-option choice restricted to {0, 1}," unchanged by v2. Rendered
+// into each of "from"/"to"'s own container by this one helper, called
+// twice below: "from" defaults to the more "baseline-like" choice for
+// each shape (0 for binary, the column's observed mean for continuous,
+// matching v1's own single-input default) and "to" defaults to the
+// contrasting one (1 for binary; left blank for continuous, since
+// there's no equivalently natural "the other value" for a free number
+// the way there is for a two-valued toggle -- SCOPE.md's v2 "Open, not
+// decided" note).
+function renderInterveneValueInput(container, node, isFrom) {
+  container.innerHTML = "";
   const stats = causalNodeStats[node];
   if (stats && stats.is_binary) {
     const row = document.createElement("div");
     row.className = "causal-intervene-toggle";
+    const defaultChoice = isFrom ? 0 : 1;
     for (const choice of [0, 1]) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = String(choice);
       btn.dataset.value = String(choice);
-      if (choice === 0) btn.classList.add("active");
+      if (choice === defaultChoice) btn.classList.add("active");
       btn.addEventListener("click", () => {
         row.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
       });
       row.appendChild(btn);
     }
-    causalInterveneValueContainer.appendChild(row);
+    container.appendChild(row);
   } else {
     const input = document.createElement("input");
     input.type = "number";
     input.step = "any";
-    if (stats) input.value = stats.mean;
-    causalInterveneValueContainer.appendChild(input);
+    if (isFrom && stats) input.value = stats.mean;
+    container.appendChild(input);
   }
 }
 
-function readInterveneValue() {
-  const toggle = causalInterveneValueContainer.querySelector(".causal-intervene-toggle");
+function readInterveneContainerValue(container) {
+  const toggle = container.querySelector(".causal-intervene-toggle");
   if (toggle) {
     const active = toggle.querySelector("button.active");
     return active ? Number(active.dataset.value) : 0;
   }
-  const input = causalInterveneValueContainer.querySelector("input");
+  const input = container.querySelector("input");
   return input ? Number(input.value) : NaN;
 }
 
@@ -1264,7 +1271,8 @@ function populateInterveneTargetSelect(node) {
 
 function onInterveneNodeChange() {
   const node = causalInterveneNodeSelect.value;
-  renderInterveneValueInput(node);
+  renderInterveneValueInput(causalInterveneFromContainer, node, true);
+  renderInterveneValueInput(causalInterveneToContainer, node, false);
   populateInterveneTargetSelect(node);
 }
 
@@ -1275,18 +1283,24 @@ function formatInterveneNumber(value) {
 async function runIntervention() {
   const node = causalInterveneNodeSelect.value;
   const target = causalInterveneTargetSelect.value;
-  const value = readInterveneValue();
-  if (!node || !target || Number.isNaN(value)) return;
+  const fromValue = readInterveneContainerValue(causalInterveneFromContainer);
+  const toValue = readInterveneContainerValue(causalInterveneToContainer);
+  if (!node || !target || Number.isNaN(fromValue) || Number.isNaN(toValue)) return;
   btnCausalIntervene.disabled = true;
   btnCausalIntervene.textContent = "Running…";
   try {
-    const result = await api("/api/causal/intervene", "POST", { node, value, target });
+    const result = await api("/api/causal/intervene", "POST", {
+      node,
+      from_value: fromValue,
+      to_value: toValue,
+      target,
+    });
     const pct =
       result.percent_change !== null ? `${(result.percent_change * 100).toFixed(1)}%` : "n/a";
     causalInterveneResult.innerHTML = `
       <div class="causal-intervene-summary">
-        <div><span>Baseline mean (${escapeHtml(target)})</span><span>${formatInterveneNumber(result.baseline_mean)}</span></div>
-        <div><span>Intervened mean</span><span>${formatInterveneNumber(result.intervened_mean)}</span></div>
+        <div><span>From mean (${escapeHtml(target)})</span><span>${formatInterveneNumber(result.from_mean)}</span></div>
+        <div><span>To mean</span><span>${formatInterveneNumber(result.to_mean)}</span></div>
         <div><span>Absolute change</span><span>${formatInterveneNumber(result.absolute_change)}</span></div>
         <div><span>Percent change</span><span>${pct}</span></div>
       </div>

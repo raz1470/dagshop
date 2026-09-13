@@ -602,7 +602,8 @@ button {
 
 #causal-intervene-node-select,
 #causal-intervene-target-select,
-#causal-intervene-value-container input[type="number"] {
+#causal-intervene-from-container input[type="number"],
+#causal-intervene-to-container input[type="number"] {
   width: 100%;
   padding: 5px 6px;
   border: 1px solid var(--color-border);
