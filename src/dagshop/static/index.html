@@ -45,14 +45,6 @@
 
         <div id="tab-causal-model" class="tab-panel hidden" role="tabpanel">
           <section id="causal-panel">
-            <h2>Causal attribution</h2>
-            <p id="causal-hint">
-              Builds a causal model from the graph above (nodes + signed edges) and ranks every
-              ancestor of a chosen node by its variance-based contribution (a Shapley value from
-              <code>dowhy.gcm</code>'s intrinsic causal influence) &mdash; not a percentage of any
-              one row's score.
-            </p>
-
             <div id="causal-noise-section">
               <h3>Root node noise</h3>
               <p id="causal-noise-hint">
@@ -70,6 +62,14 @@
         </div>
 
         <div id="tab-causal-impact" class="tab-panel hidden" role="tabpanel">
+          <h2>Causal attribution</h2>
+          <p id="causal-hint">
+            Ranks every ancestor of a chosen node by its variance-based contribution (a Shapley
+            value from <code>dowhy.gcm</code>'s intrinsic causal influence) &mdash; not a
+            percentage of any one row's score. Needs a causal model built on the Causal model tab
+            first.
+          </p>
+
           <div id="causal-attribute-controls" class="hidden">
             <label for="causal-target-select">Target node</label>
             <div class="causal-target-row">

@@ -398,7 +398,8 @@ button {
 
 /* -- causal attribution panel (SCOPE.md build order step 6) ------------ */
 
-#causal-panel h2 {
+#causal-panel h2,
+#tab-causal-impact > h2 {
   font-size: 14px;
   margin: 0 0 8px;
 }
