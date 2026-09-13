@@ -84,6 +84,24 @@ for a cyclic graph, `ColumnTypeError` for a non-numeric column,
 `KeyError` for an unknown target node or an unknown `noise_models`
 node, `ValueError` for a `noise_models` node that isn't a root) already
 map cleanly to 400/404 through them.
+
+`POST /api/causal/intervene` (SCOPE.md's "Causal impact tab:
+interventions" section, build order step 3) is a fourth endpoint on the
+same cache: `do(node := value)` against `causal_model_state.scm`,
+comparing `target`'s real observed mean against its post-intervention
+mean (`causal_model.intervene`). Same 400-if-not-built guard as the two
+`GET` routes above; reuses the same `KeyError`/`ValueError` exception
+handlers for an unknown node or a `target` that isn't a descendant of
+`node`. `node_stats` (added to `POST /api/causal/build`'s own response,
+alongside `attributable_nodes`) is descriptive, not causal: `is_binary`
+(`nunique() == 2`, the same heuristic `causal_model.py`'s
+`_is_binary_coded` uses, redefined here rather than imported for the
+same reason that module's own docstring gives for redefining it a
+second time there) and `mean`, both read directly off `data`, not
+`causal_model_state`. The intervention panel needs both before any
+intervention has actually been run: `is_binary` picks a binary toggle
+over a free numeric value input, `mean` pre-fills that numeric input
+for a continuous node.
 """
 
 from __future__ import annotations
@@ -112,6 +130,7 @@ from dagshop.causal_model import (
     build_node_plots,
     evaluate_causal_model,
     fit_causal_model,
+    intervene,
 )
 from dagshop.graph import CycleWarning, DAGModel, GraphValidationError, Role, Sign
 
@@ -174,6 +193,19 @@ class CausalBuildRequest(BaseModel):
     """
 
     noise_models: dict[str, NoiseModel] | None = None
+
+
+class CausalInterveneRequest(BaseModel):
+    """Body for `POST /api/causal/intervene`: `do(node := value)`, read off `target`.
+
+    All three required, unlike `CausalBuildRequest`: an intervention
+    with no node/value/target picked is not a meaningful default the
+    way "every root stays empirical" is for a build.
+    """
+
+    node: str
+    value: float
+    target: str
 
 
 def _serialize_evaluation(
@@ -444,9 +476,21 @@ def create_app(
         node_plots = build_node_plots(fitted, data, test_size=test_size, random_state=random_state)
         causal_model_state = fitted
         causal_node_plots = node_plots
+        # Descriptive stats for the interventions panel's value input
+        # (see module docstring): computed directly off `data`, not
+        # derived from anything `causal_model.py` fits, so this loop
+        # doesn't belong in that module.
+        node_stats = {
+            node: {
+                "is_binary": bool(data[node].dropna().nunique() == 2),
+                "mean": float(data[node].dropna().mean()),
+            }
+            for node in dag.nodes
+        }
         return {
             "fitted": True,
             "attributable_nodes": dag.nodes,
+            "node_stats": node_stats,
             "sign_disagreements": [asdict(d) for d in fitted.sign_disagreements],
             "evaluation": _serialize_evaluation(evaluation, node_plots),
         }
@@ -468,6 +512,16 @@ def create_app(
             "target_node": target_node,
             "contributions": [asdict(r) for r in contributions],
         }
+
+    @app.post("/api/causal/intervene")
+    def intervene_causal_model(body: CausalInterveneRequest) -> dict[str, Any]:
+        if causal_model_state is None:
+            raise HTTPException(
+                status_code=400,
+                detail="causal model not built yet -- POST /api/causal/build first",
+            )
+        result = intervene(causal_model_state, data, body.node, body.value, body.target)
+        return asdict(result)
 
     @app.get("/api/causal/plot/{node}")
     def get_causal_node_plot(node: str) -> dict[str, Any]:

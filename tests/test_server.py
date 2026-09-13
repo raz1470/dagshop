@@ -583,6 +583,55 @@ def test_attribute_unknown_node_is_404(client, sequential_gcm_jobs):
     assert resp.status_code == 404
 
 
+def test_build_causal_model_includes_node_stats(client, sequential_gcm_jobs):
+    resp = _build_chain(client)
+    assert resp.status_code == 200
+    node_stats = resp.json()["node_stats"]
+    assert set(node_stats) == {"a", "b", "c"}
+    for stats in node_stats.values():
+        assert stats["is_binary"] is False
+        assert isinstance(stats["mean"], float)
+
+
+# -- causal interventions --------------------------------------------------------
+
+
+def test_intervene_before_build_is_400(client):
+    resp = client.post("/api/causal/intervene", json={"node": "a", "value": 1.0, "target": "b"})
+    assert resp.status_code == 400
+    assert "build" in resp.json()["detail"]
+
+
+def test_intervene_after_build(client, sequential_gcm_jobs):
+    build_resp = _build_chain(client)
+    assert build_resp.status_code == 200
+
+    resp = client.post("/api/causal/intervene", json={"node": "a", "value": 10.0, "target": "c"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["node"] == "a"
+    assert body["target"] == "c"
+    assert body["value"] == 10.0
+    assert isinstance(body["baseline_mean"], float)
+    assert isinstance(body["intervened_mean"], float)
+    assert body["absolute_change"] == pytest.approx(body["intervened_mean"] - body["baseline_mean"])
+
+
+def test_intervene_unknown_node_is_404(client, sequential_gcm_jobs):
+    _build_chain(client)
+    resp = client.post("/api/causal/intervene", json={"node": "nope", "value": 1.0, "target": "c"})
+    assert resp.status_code == 404
+
+
+def test_intervene_non_descendant_target_is_400(client, sequential_gcm_jobs):
+    _build_chain(client)
+    # "a" is an ancestor of "c" ("a -> b -> c"), not a descendant --
+    # do() cannot change a node's own ancestors (causal_model.py's
+    # `intervene` docstring).
+    resp = client.post("/api/causal/intervene", json={"node": "c", "value": 1.0, "target": "a"})
+    assert resp.status_code == 400
+
+
 # -- causal per-node plots ------------------------------------------------------
 
 

@@ -78,6 +78,28 @@
             </div>
           </div>
           <div id="causal-contribution-container"></div>
+
+          <section id="causal-intervene-section">
+            <h3>Interventions</h3>
+            <p id="causal-intervene-hint">
+              Sets one node to a chosen value (<code>do(node := value)</code>) and compares a
+              descendant node's mean against its real observed mean &mdash; every other node stays
+              at its actual value for the same rows.
+            </p>
+            <div id="causal-intervene-controls" class="hidden">
+              <label for="causal-intervene-node-select">Node</label>
+              <select id="causal-intervene-node-select"></select>
+
+              <label>Value</label>
+              <div id="causal-intervene-value-container"></div>
+
+              <label for="causal-intervene-target-select">Target (descendant of node)</label>
+              <select id="causal-intervene-target-select"></select>
+
+              <button id="btn-causal-intervene" type="button">Run intervention</button>
+            </div>
+            <div id="causal-intervene-result"></div>
+          </section>
         </div>
       </aside>
 
