@@ -162,6 +162,16 @@ the designated outcome, so there's usually already something to see on
 this tab. Row click reuses the same plot modal as the association
 tables.
 
+Below that, the interventions panel compares two hypothetical values
+for a node — pick a node, a "From" value and a "To" value, and a
+target (restricted to that node's own descendants, since an ancestor
+or unrelated node can't change under `do()` by definition). Both sides
+are synthetic `do()` draws (`gcm.interventional_samples` under the
+hood, run twice), not a comparison against the real observed data —
+every other column stays at its real observed value for the same
+rows, for both draws. The result shows both means plus the absolute
+and percent change between them.
+
 ---
 
 The exported JSON/GraphML is meant to be loaded straight into your own

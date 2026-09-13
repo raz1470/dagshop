@@ -386,14 +386,14 @@ def test_intervene_unknown_node_raises_key_error() -> None:
     dag, data = _root_mid_target_dag_and_data()
     fitted = _fit(dag, data)
     with pytest.raises(KeyError, match="nope"):
-        intervene(fitted, data, "nope", 1.0, "target")
+        intervene(fitted, data, "nope", 1.0, 2.0, "target")
 
 
 def test_intervene_unknown_target_raises_key_error() -> None:
     dag, data = _root_mid_target_dag_and_data()
     fitted = _fit(dag, data)
     with pytest.raises(KeyError, match="nope"):
-        intervene(fitted, data, "root", 1.0, "nope")
+        intervene(fitted, data, "root", 1.0, 2.0, "nope")
 
 
 def test_intervene_non_descendant_target_raises_value_error() -> None:
@@ -403,7 +403,7 @@ def test_intervene_non_descendant_target_raises_value_error() -> None:
     dag, data = _root_mid_target_dag_and_data()
     fitted = _fit(dag, data)
     with pytest.raises(ValueError, match="not a descendant"):
-        intervene(fitted, data, "target", 1.0, "root")
+        intervene(fitted, data, "target", 1.0, 2.0, "root")
 
 
 def test_intervene_node_as_its_own_target_raises_value_error() -> None:
@@ -413,47 +413,65 @@ def test_intervene_node_as_its_own_target_raises_value_error() -> None:
     dag, data = _root_mid_target_dag_and_data()
     fitted = _fit(dag, data)
     with pytest.raises(ValueError, match="not a descendant"):
-        intervene(fitted, data, "mid", 1.0, "mid")
+        intervene(fitted, data, "mid", 1.0, 2.0, "mid")
 
 
 def test_intervene_moves_target_in_asserted_direction() -> None:
     """root -> mid -> target, both edges "+" (see
-    `_root_mid_target_dag_and_data`): pushing `root` well above its
-    observed range should raise `target`'s mean, not lower it -- the
-    regressor's own `monotonic_cst` hard-enforces the asserted sign
-    (see causal_model.py's module docstring), so this holds robustly,
-    not just on average."""
+    `_root_mid_target_dag_and_data`): comparing a "from" well below
+    `root`'s observed range against a "to" well above it should raise
+    `target`'s mean, not lower it -- the regressor's own
+    `monotonic_cst` hard-enforces the asserted sign (see
+    causal_model.py's module docstring), so this holds robustly, not
+    just on average. v2 (SCOPE.md's "Revised: v2, two-value
+    comparison"): both values are synthetic `do()` draws now, neither
+    is the real observed baseline."""
     dag, data = _root_mid_target_dag_and_data()
     fitted = _fit(dag, data)
-    result = intervene(fitted, data, "root", 8.0, "target")
+    result = intervene(fitted, data, "root", -8.0, 8.0, "target")
     assert isinstance(result, InterventionResult)
     assert result.node == "root"
     assert result.target == "target"
-    assert result.value == 8.0
-    assert result.intervened_mean > result.baseline_mean
-    assert result.absolute_change == pytest.approx(result.intervened_mean - result.baseline_mean)
+    assert result.from_value == -8.0
+    assert result.to_value == 8.0
+    assert result.to_mean > result.from_mean
+    assert result.absolute_change == pytest.approx(result.to_mean - result.from_mean)
 
 
-def test_intervene_percent_change_is_absolute_change_over_baseline() -> None:
+def test_intervene_percent_change_is_absolute_change_over_from_mean() -> None:
     dag, data = _root_mid_target_dag_and_data()
     fitted = _fit(dag, data)
-    result = intervene(fitted, data, "root", 5.0, "target")
-    assert result.baseline_mean != pytest.approx(0.0)
-    assert result.percent_change == pytest.approx(
-        result.absolute_change / abs(result.baseline_mean)
-    )
+    result = intervene(fitted, data, "root", 0.0, 5.0, "target")
+    assert result.from_mean != pytest.approx(0.0)
+    assert result.percent_change == pytest.approx(result.absolute_change / abs(result.from_mean))
 
 
-def test_intervene_percent_change_is_none_for_near_zero_baseline() -> None:
-    """A near-zero baseline mean makes percent change meaningless (see
-    `InterventionResult`'s docstring): `target` recentered to a ~zero
-    mean rather than reaching for an unrelated fixture."""
+def test_intervene_percent_change_is_none_for_near_zero_from_mean() -> None:
+    """A near-zero "from" mean makes percent change meaningless (see
+    `InterventionResult`'s docstring).
+
+    v1's equivalent test recentered `target` to a zero mean and read
+    `baseline_mean` straight off that real column -- exactly zero by
+    construction, no model involved. v2's `from_mean` is a *predicted*
+    quantity instead (`gcm.interventional_samples`' own resampled
+    residual noise, not the real column), so recentering the real data
+    and hoping a `do()` prediction lands within `1e-9` of the same
+    number no longer works: a fitted mechanism's own residual
+    resampling introduces sampling noise several orders of magnitude
+    larger than `1e-9` (checked directly -- the recentering approach
+    failed this assertion in practice). A `target` column that is
+    exactly constant (zero variance) sidesteps this: the fitted
+    mechanism's residuals are all exactly zero too, so every `do()`
+    prediction -- `from_value` included -- comes back as exactly `0.0`,
+    comfortably inside the guard's `1e-9` threshold regardless of which
+    two values are compared.
+    """
     dag, data = _root_mid_target_dag_and_data()
     data = data.copy()
-    data["target"] = data["target"] - data["target"].mean()
+    data["target"] = 0.0
     fitted = _fit(dag, data)
-    result = intervene(fitted, data, "root", 0.0, "target")
-    assert result.baseline_mean == pytest.approx(0.0, abs=1e-9)
+    result = intervene(fitted, data, "root", 0.0, 5.0, "target")
+    assert result.from_mean == pytest.approx(0.0, abs=1e-9)
     assert result.percent_change is None
 
 
@@ -462,16 +480,18 @@ def test_intervene_csat_scenario_age_lowers_csat() -> None:
     `_csat_dag` above), and `age` has no other outgoing edge, so `csat`
     is its only descendant -- a clean single-hop check against real
     demo data, not just the small hand-built fixture the rest of this
-    file uses."""
+    file uses. v2: "from" is a typical age (the column's own observed
+    mean), "to" is well above the observed range, both synthetic."""
     from dagshop.demo_data import make_csat_demo_data
 
     data = make_csat_demo_data(n_rows=250, random_state=0)
     dag = _csat_dag()
     fitted = _fit(dag, data)
 
+    typical_age = float(data["age"].mean())
     high_age = float(data["age"].max() + 5 * data["age"].std())
-    result = intervene(fitted, data, "age", high_age, "csat")
-    assert result.intervened_mean < result.baseline_mean
+    result = intervene(fitted, data, "age", typical_age, high_age, "csat")
+    assert result.to_mean < result.from_mean
 
 
 # -- private-helper branch coverage ----------------------------------------------

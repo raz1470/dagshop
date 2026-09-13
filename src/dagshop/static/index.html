@@ -82,16 +82,19 @@
           <section id="causal-intervene-section">
             <h3>Interventions</h3>
             <p id="causal-intervene-hint">
-              Sets one node to a chosen value (<code>do(node := value)</code>) and compares a
-              descendant node's mean against its real observed mean &mdash; every other node stays
-              at its actual value for the same rows.
+              Compares two hypothetical values for a node (<code>do(node := from_value)</code>
+              vs <code>do(node := to_value)</code>) &mdash; every other node stays at its real
+              observed value for the same rows, for both.
             </p>
             <div id="causal-intervene-controls" class="hidden">
               <label for="causal-intervene-node-select">Node</label>
               <select id="causal-intervene-node-select"></select>
 
-              <label>Value</label>
-              <div id="causal-intervene-value-container"></div>
+              <label>From</label>
+              <div id="causal-intervene-from-container"></div>
+
+              <label>To</label>
+              <div id="causal-intervene-to-container"></div>
 
               <label for="causal-intervene-target-select">Target (descendant of node)</label>
               <select id="causal-intervene-target-select"></select>

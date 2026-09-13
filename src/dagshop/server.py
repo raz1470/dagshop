@@ -86,13 +86,15 @@ node, `ValueError` for a `noise_models` node that isn't a root) already
 map cleanly to 400/404 through them.
 
 `POST /api/causal/intervene` (SCOPE.md's "Causal impact tab:
-interventions" section, build order step 3) is a fourth endpoint on the
-same cache: `do(node := value)` against `causal_model_state.scm`,
-comparing `target`'s real observed mean against its post-intervention
-mean (`causal_model.intervene`). Same 400-if-not-built guard as the two
-`GET` routes above; reuses the same `KeyError`/`ValueError` exception
-handlers for an unknown node or a `target` that isn't a descendant of
-`node`. `node_stats` (added to `POST /api/causal/build`'s own response,
+interventions" section, v2 build order step 3) is a fourth endpoint on
+the same cache: `do(node := from_value)` vs `do(node := to_value)`
+against `causal_model_state.scm`, both synthetic (`causal_model.
+intervene` -- v2 replaced v1's "vs the real observed mean" comparison
+entirely, per SCOPE.md's "Revised: v2, two-value comparison"). Same
+400-if-not-built guard as the two `GET` routes above; reuses the same
+`KeyError`/`ValueError` exception handlers for an unknown node or a
+`target` that isn't a descendant of `node`. `node_stats` (added to
+`POST /api/causal/build`'s own response,
 alongside `attributable_nodes`) is descriptive, not causal: `is_binary`
 (`nunique() == 2`, the same heuristic `causal_model.py`'s
 `_is_binary_coded` uses, redefined here rather than imported for the
@@ -196,15 +198,17 @@ class CausalBuildRequest(BaseModel):
 
 
 class CausalInterveneRequest(BaseModel):
-    """Body for `POST /api/causal/intervene`: `do(node := value)`, read off `target`.
+    """Body for `POST /api/causal/intervene`: `do(node := from_value)` vs
+    `do(node := to_value)`, read off `target`.
 
-    All three required, unlike `CausalBuildRequest`: an intervention
-    with no node/value/target picked is not a meaningful default the
-    way "every root stays empirical" is for a build.
+    All four required, unlike `CausalBuildRequest`: an intervention
+    with no node/from_value/to_value/target picked is not a meaningful
+    default the way "every root stays empirical" is for a build.
     """
 
     node: str
-    value: float
+    from_value: float
+    to_value: float
     target: str
 
 
@@ -520,7 +524,9 @@ def create_app(
                 status_code=400,
                 detail="causal model not built yet -- POST /api/causal/build first",
             )
-        result = intervene(causal_model_state, data, body.node, body.value, body.target)
+        result = intervene(
+            causal_model_state, data, body.node, body.from_value, body.to_value, body.target
+        )
         return asdict(result)
 
     @app.get("/api/causal/plot/{node}")
