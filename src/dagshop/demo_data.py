@@ -20,6 +20,14 @@ Two scenarios:
   operations DAG, added for the causal attribution feature so "attribute
   to all ancestors, not just direct parents" has a real, documented
   structure to prove itself against. See its own docstring.
+- `make_csat_period_comparison_data` (`--scenario csat-period`): two
+  periods of `make_csat_demo_data`'s own CSAT scenario stacked with a
+  `period` column, one edge's coefficient deliberately changed and one
+  root's distribution deliberately shifted between periods -- added for
+  the "Period vs period attribution" feature (SCOPE.md) so its estimator
+  has a known-ground-truth mechanism change and a known-ground-truth
+  pure distribution shift to prove itself against, in the same DAG the
+  causal attribution feature already uses. See its own docstring.
 """
 
 from __future__ import annotations
@@ -81,7 +89,13 @@ def make_demo_data(n_rows: int = 500, random_state: int = 0) -> pd.DataFrame:
     )
 
 
-def make_csat_demo_data(n_rows: int = 500, random_state: int = 0) -> pd.DataFrame:
+def make_csat_demo_data(
+    n_rows: int = 500,
+    random_state: int = 0,
+    *,
+    num_transfers_friction_coef: float = 0.18,
+    time_to_respond_scale: float = 5.0,
+) -> pd.DataFrame:
     """Build a synthetic customer-service operations dataset, target `csat`.
 
     Ground-truth structure (all columns continuous unless noted; the
@@ -114,6 +128,12 @@ def make_csat_demo_data(n_rows: int = 500, random_state: int = 0) -> pd.DataFram
         csat (target)          <- age, time_to_respond, repeat_contact,
                                    time_to_resolve, num_agents_spoken_to,
                                    resolved
+
+    `num_transfers_friction_coef` (default 0.18, matching the original
+    generator) and `time_to_respond_scale` (default 5.0, ditto) exist
+    purely for `make_csat_period_comparison_data` below to vary --
+    changing either changes generated values but not the documented
+    ground-truth structure or signs above.
 
     Revised from an earlier version of this scenario: `friction_severity`
     used to also feed `csat`, `resolved`, and `repeat_contact` directly,
@@ -163,10 +183,10 @@ def make_csat_demo_data(n_rows: int = 500, random_state: int = 0) -> pd.DataFram
 
     age = rng.normal(45, 12, size=n_rows)
     friction_severity = rng.gamma(shape=2.0, scale=2.5, size=n_rows)
-    time_to_respond = rng.gamma(shape=3.0, scale=5.0, size=n_rows)
+    time_to_respond = rng.gamma(shape=3.0, scale=time_to_respond_scale, size=n_rows)
     repeat_contact = rng.binomial(1, 0.3, size=n_rows)
 
-    num_transfers = rng.poisson(0.18 * friction_severity)
+    num_transfers = rng.poisson(num_transfers_friction_coef * friction_severity)
     num_escalations = rng.poisson(0.08 * friction_severity)
     num_agents_spoken_to = 1 + rng.poisson(0.6 * num_transfers + 0.4 * num_escalations)
 
@@ -211,3 +231,58 @@ def make_csat_demo_data(n_rows: int = 500, random_state: int = 0) -> pd.DataFram
             "csat": csat,
         }
     )
+
+
+def make_csat_period_comparison_data(n_rows: int = 500, random_state: int = 0) -> pd.DataFrame:
+    """Two periods of `make_csat_demo_data`'s CSAT scenario, stacked with a `period` column.
+
+    Added for SCOPE.md's "Period vs period attribution feature": rows
+    with `period == "baseline"` are `make_csat_demo_data`'s data
+    unchanged; rows with `period == "new"` come from the same generator,
+    same DAG, same signs, but with two deliberate differences chosen to
+    exercise the two cases that feature's estimator (`causal_model.
+    attribute_period_change`, wrapping `gcm.distribution_change`) needs
+    to get right, not just "does the target's mean move":
+
+    1. **Genuine mechanism change, not just a moved input**:
+       `num_transfers`'s own mechanism (`num_transfers_friction_coef`)
+       goes from 0.18 to 0.30 -- `friction_severity -> num_transfers`
+       itself gets stronger, holding `friction_severity`'s own
+       distribution fixed. A correct estimator attributes this to
+       `num_transfers`, not to `friction_severity` (whose own root
+       distribution didn't change) and not to `num_transfers`'s
+       downstream effects (`num_agents_spoken_to`, `time_to_resolve`,
+       `resolved`, whose own conditional mechanisms given their parents
+       didn't change either, even though their observed values shift
+       because `num_transfers` feeds them different inputs now).
+    2. **Pure distribution shift, mechanism unchanged**: `time_to_respond`
+       (a root -- its own marginal distribution *is* its mechanism) goes
+       from `gamma(shape=3.0, scale=5.0)` (mean 15) to `gamma(shape=3.0,
+       scale=7.0)` (mean 21) -- response queues got slower. Its edge
+       into `csat` (coefficient -0.05) is untouched. A correct estimator
+       attributes this entirely to `time_to_respond` itself, since it
+       is a root with no ancestors to (mis)attribute to.
+
+    `random_state` seeds the baseline period; the new period uses
+    `random_state + 1` (a fresh draw, not the same rows re-shifted --
+    two real independent samples from two related but distinct
+    generating processes, matching how two actual reporting periods
+    would relate).
+
+    Every other column/coefficient/sign is identical between periods,
+    so any correctly-attributed change in `csat`'s mean should trace
+    to exactly these two nodes and nowhere else -- the known answer
+    build order step 5's tests check against.
+    """
+    baseline = make_csat_demo_data(n_rows=n_rows, random_state=random_state)
+    baseline = baseline.assign(period="baseline")
+
+    new_period = make_csat_demo_data(
+        n_rows=n_rows,
+        random_state=random_state + 1,
+        num_transfers_friction_coef=0.30,
+        time_to_respond_scale=7.0,
+    )
+    new_period = new_period.assign(period="new")
+
+    return pd.concat([baseline, new_period], ignore_index=True)
