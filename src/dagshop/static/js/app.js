@@ -57,6 +57,14 @@ const causalInterveneTargetSelect = document.getElementById("causal-intervene-ta
 const btnCausalIntervene = document.getElementById("btn-causal-intervene");
 const causalInterveneResult = document.getElementById("causal-intervene-result");
 
+const periodNoColumnHint = document.getElementById("period-no-column-hint");
+const periodControls = document.getElementById("period-controls");
+const periodTargetSelect = document.getElementById("period-target-select");
+const periodOldSelect = document.getElementById("period-old-select");
+const periodNewSelect = document.getElementById("period-new-select");
+const btnPeriodAttribute = document.getElementById("btn-period-attribute");
+const periodContributionContainer = document.getElementById("period-contribution-container");
+
 let cy = null;
 
 // Root-node noise choice for the next `POST /api/causal/build`, keyed by
@@ -80,6 +88,16 @@ let causalNodeStats = {};
 // itself already uses -- the frontend just needs the edge list to do
 // the equivalent BFS in JS).
 let causalGraphEdges = [];
+
+// Period column name and its distinct values, from `GET /api/health`'s
+// `period_column`/`period_values` (server.py's module docstring: fixed
+// for the life of the server process, set once at `dagshop launch`) --
+// fetched once in `init()`, not re-fetched on every tab switch or
+// build. `periodColumn` stays `null` for a session launched without
+// `--period-column`, in which case `#period-controls` never leaves
+// `.hidden` (see `populatePeriodColumnControls`).
+let periodColumn = null;
+let periodValues = [];
 
 // -- API helper -------------------------------------------------------------
 
@@ -1318,6 +1336,121 @@ function wireInterveneControls() {
   btnCausalIntervene.addEventListener("click", runIntervention);
 }
 
+// -- period comparison panel (SCOPE.md "Period vs period attribution feature") --
+
+// Called once from `init()`, after the first `GET /api/health` --
+// `period_values` doesn't change over the life of the server process
+// (server.py's module docstring), so the old/new pickers are populated
+// here rather than re-fetched on every build or tab switch.
+function populatePeriodColumnControls(health) {
+  periodColumn = health.period_column;
+  periodValues = health.period_values || [];
+  if (periodColumn === null) {
+    periodNoColumnHint.classList.remove("hidden");
+    return;
+  }
+  for (const select of [periodOldSelect, periodNewSelect]) {
+    select.innerHTML = "";
+    for (const value of periodValues) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      select.appendChild(option);
+    }
+  }
+  // Default to the first two distinct values (server.py's `period_values`
+  // is already sorted) as "baseline" vs "new" -- matches the
+  // csat-period demo's alphabetical "baseline" < "new" ordering, and is
+  // at least a sane starting point for a column with more than two
+  // values (v1 still only ever compares two at a time -- see
+  // causal_model.py's `attribute_period_change` docstring).
+  if (periodValues.length > 1) periodNewSelect.value = periodValues[1];
+}
+
+// Mirrors `populateCausalTargetSelect` above, targeting the Period
+// comparison tab's own select instead -- kept separate rather than
+// parameterized, since the two tabs' target pickers are populated from
+// the same `buildCausalModel` call but render into different DOM nodes.
+function populatePeriodTargetSelect(nodes, preferredDefault) {
+  periodTargetSelect.innerHTML = "";
+  for (const name of nodes) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    periodTargetSelect.appendChild(option);
+  }
+  if (preferredDefault && nodes.includes(preferredDefault)) {
+    periodTargetSelect.value = preferredDefault;
+  }
+}
+
+function buildPeriodContributionTable(targetNode, rows) {
+  const table = document.createElement("table");
+  table.className = "rank-table";
+  const caption = document.createElement("caption");
+  caption.textContent = `Drivers of "${targetNode}"'s change (${rows.length})`;
+  table.appendChild(caption);
+
+  const thead = document.createElement("thead");
+  thead.innerHTML = "<tr><th>Node</th><th>Share</th><th>Mechanism changed?</th></tr>";
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    // Same residual-row relabeling as `buildContributionTable` above:
+    // the target's own row is its unexplained change, not a driver of
+    // itself (see `PeriodAttributionResult`'s docstring).
+    const displayName = row.node === targetNode ? "Other" : row.node;
+    tr.innerHTML = `
+      <td>${escapeHtml(displayName)}</td>
+      <td>${contributionCellHtml(row)}</td>
+      <td>${row.mechanism_changed ? "yes" : "no"}</td>
+    `;
+    // Same plot-modal drill-down pattern as the Causal impact
+    // contribution table (SCOPE.md build order step 4): reuses the
+    // association scan's own cached pairwise plot, not a new endpoint.
+    tr.addEventListener("click", () => openPlot(row.node, targetNode));
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
+async function attributePeriodChange() {
+  const targetNode = periodTargetSelect.value;
+  const oldPeriod = periodOldSelect.value;
+  const newPeriod = periodNewSelect.value;
+  if (!targetNode || !oldPeriod || !newPeriod) return;
+  if (oldPeriod === newPeriod) {
+    periodContributionContainer.innerHTML = "<p>Pick two different periods to compare.</p>";
+    return;
+  }
+  btnPeriodAttribute.disabled = true;
+  btnPeriodAttribute.textContent = "Running\u2026";
+  periodContributionContainer.innerHTML = "<p>Loading\u2026</p>";
+  try {
+    const result = await api("/api/causal/period-attribution", "POST", {
+      target_node: targetNode,
+      old_period: oldPeriod,
+      new_period: newPeriod,
+    });
+    periodContributionContainer.innerHTML = "";
+    periodContributionContainer.appendChild(
+      buildPeriodContributionTable(targetNode, result.contributions),
+    );
+  } catch (err) {
+    periodContributionContainer.innerHTML = `<p>Could not load contributions: ${escapeHtml(err.message)}</p>`;
+  } finally {
+    btnPeriodAttribute.disabled = false;
+    btnPeriodAttribute.textContent = "Show change drivers";
+  }
+}
+
+function wirePeriodPanel() {
+  btnPeriodAttribute.addEventListener("click", attributePeriodChange);
+}
+
 async function attributeCausalTarget(targetNode) {
   causalContributionContainer.innerHTML = "<p>Loading…</p>";
   try {
@@ -1350,6 +1483,12 @@ async function buildCausalModel() {
     causalInterveneResult.innerHTML = "";
     if (causalInterveneNodeSelect.value) onInterveneNodeChange();
     causalInterveneControls.classList.remove("hidden");
+
+    if (periodColumn !== null) {
+      populatePeriodTargetSelect(result.attributable_nodes, preferredDefault);
+      periodContributionContainer.innerHTML = "";
+      periodControls.classList.remove("hidden");
+    }
     // Deliberately does not switch tabs here. The falsification result
     // just rendered above lives on the "Causal model" tab (where the
     // user already is, having just clicked Build), and auto-switching
@@ -1378,6 +1517,7 @@ function wireCausalPanel() {
     if (causalTargetSelect.value) attributeCausalTarget(causalTargetSelect.value);
   });
   wireInterveneControls();
+  wirePeriodPanel();
 }
 
 // -- init ------------------------------------------------------------------------
@@ -1391,6 +1531,7 @@ async function init() {
     ]);
     renderDatasetSummary(health);
     renderTables(tables);
+    populatePeriodColumnControls(health);
     const eh = initCytoscape(graph);
     renderNoiseDropdowns();
     wireTopbar();

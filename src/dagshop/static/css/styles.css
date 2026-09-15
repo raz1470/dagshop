@@ -663,3 +663,66 @@ button {
   justify-content: space-between;
   padding: 2px 0;
 }
+
+/* -- period comparison tab (SCOPE.md "Period vs period attribution feature") -- */
+
+#period-hint,
+#period-no-column-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--color-muted);
+}
+
+#period-no-column-hint.hidden {
+  display: none;
+}
+
+#period-controls {
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+#period-controls.hidden {
+  display: none;
+}
+
+#period-controls label {
+  display: block;
+  margin: 8px 0 4px;
+  color: var(--color-muted);
+}
+
+#period-controls label:first-child {
+  margin-top: 0;
+}
+
+#period-target-select,
+#period-old-select,
+#period-new-select {
+  width: 100%;
+  padding: 5px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font: inherit;
+}
+
+#btn-period-attribute {
+  margin-top: 10px;
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-panel);
+  border-radius: 4px;
+}
+
+#btn-period-attribute:hover {
+  background: #f0f0f3;
+}
+
+#btn-period-attribute:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+#period-contribution-container {
+  font-size: 12px;
+}

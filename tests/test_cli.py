@@ -87,6 +87,7 @@ def test_parser_defaults(tmp_path):
     assert args.plot_grid_size == 50
     assert args.strong_r2 == 0.01
     assert args.strong_auc == 0.55
+    assert args.period_column is None
     assert args.session is None
     assert args.host == "127.0.0.1"
     assert args.port == 8000
@@ -109,6 +110,12 @@ def test_parser_repeatable_treatment_and_outcome_flags(tmp_path):
     )
     assert args.treatments == ["x", "y"]
     assert args.outcomes == ["z"]
+
+
+def test_parser_period_column_flag(tmp_path):
+    parser = cli._build_parser()
+    args = parser.parse_args(["launch", str(tmp_path / "data.csv"), "--period-column", "period"])
+    assert args.period_column == "period"
 
 
 def test_parser_overrides(tmp_path):
@@ -198,6 +205,7 @@ def test_main_calls_create_app_with_parsed_args(mock_create_app, mock_uvicorn_ru
         data,
         treatments=["a"],
         outcomes=["b"],
+        period_column=None,
         max_rows=100,
         test_size=0.25,
         random_state=3,
@@ -218,6 +226,13 @@ def test_main_passes_session_path_through(mock_create_app, mock_uvicorn_run, tmp
     port = _free_port()
     cli.main(["launch", str(data), "--session", str(session_path), "--port", str(port)])
     assert mock_create_app.call_args.kwargs["initial_session"] == session_path
+
+
+def test_main_passes_period_column_through(mock_create_app, mock_uvicorn_run, tmp_path):
+    data = _write_csv(tmp_path)
+    port = _free_port()
+    cli.main(["launch", str(data), "--period-column", "period", "--port", str(port)])
+    assert mock_create_app.call_args.kwargs["period_column"] == "period"
 
 
 def test_main_surfaces_create_app_value_error(mock_create_app, capsys, tmp_path):
@@ -365,6 +380,33 @@ def test_generate_demo_data_csat_scenario_writes_csv(tmp_path, capsys):
     assert "dagshop launch" in out
     assert "--outcome csat" in out
     assert "--treatment treatment --outcome outcome" not in out
+
+
+def test_generate_demo_data_csat_period_scenario_writes_csv(tmp_path, capsys):
+    output = tmp_path / "csat_period.csv"
+    cli.main(
+        [
+            "generate-demo-data",
+            str(output),
+            "--scenario",
+            "csat-period",
+            "--n-rows",
+            "40",
+            "--random-state",
+            "3",
+        ]
+    )
+
+    assert output.exists()
+    written = pd.read_csv(output)
+    assert len(written) == 80  # 40 rows per period, two periods
+    assert "csat" in written.columns
+    assert set(written["period"]) == {"baseline", "new"}
+
+    out = capsys.readouterr().out
+    assert "Wrote 80 rows" in out
+    assert "dagshop launch" in out
+    assert "--outcome csat --period-column period" in out
 
 
 def test_generate_demo_data_quotes_path_with_space_in_hint(tmp_path, capsys):

@@ -104,6 +104,31 @@ second time there) and `mean`, both read directly off `data`, not
 intervention has actually been run: `is_binary` picks a binary toggle
 over a free numeric value input, `mean` pre-fills that numeric input
 for a continuous node.
+
+Period comparison: `create_app`'s optional `period_column` (SCOPE.md's
+"Period vs period attribution feature", build order step 3) names a
+column that splits `data`'s rows into two periods for `POST
+/api/causal/period-attribution`, without ever becoming a DAG node
+itself -- `dag_columns` (everything but `period_column`) is what the
+association scan, `_build_initial_dag`, and every `dag.nodes`-scoped
+causal call below actually see, so the column never has to satisfy
+`_validate_dtypes`/`_validate_columns`'s numeric-only rule the way
+every real DAG variable does. `data` itself keeps the column though
+(nothing above drops it from the loaded dataframe), which is what lets
+the new endpoint split on it. `GET /api/health` surfaces
+`period_column`/`period_values` (the column's sorted, stringified
+distinct values, or both `None` if unconfigured) so the frontend can
+build its period pickers without a dedicated endpoint. `POST
+/api/causal/period-attribution` reuses the same `causal_model_state`
+cache as the three routes above (a 400 if no period column is
+configured, another if no model has been built yet -- see that route's
+own comment for the ordering) and wraps `causal_model.
+attribute_period_change`, matching `old_period`/`new_period` against
+`period_column`'s values as strings (`.astype(str)`) so this works
+whether the column holds string labels or something else (year ints,
+say). A 400 names either given value if no row matches it -- checked
+before the estimator ever runs, not surfaced as a `dowhy`-internal
+error partway through fitting.
 """
 
 from __future__ import annotations
@@ -128,6 +153,7 @@ from dagshop.causal_model import (
     ModelEvaluation,
     NoiseModel,
     ObservedVsSampledPlot,
+    attribute_period_change,
     attribute_target,
     build_node_plots,
     evaluate_causal_model,
@@ -212,6 +238,22 @@ class CausalInterveneRequest(BaseModel):
     target: str
 
 
+class PeriodAttributionRequest(BaseModel):
+    """Body for `POST /api/causal/period-attribution`.
+
+    `old_period`/`new_period` are matched against `period_column`'s
+    values as strings (`.astype(str)`, both server- and client-side --
+    see `get_period_attribution` below), not the column's native dtype:
+    keeps this endpoint working whether the column holds string labels
+    (the `csat-period` demo's `"baseline"`/`"new"`) or something else
+    (year ints, say) without a second, type-specific request shape.
+    """
+
+    target_node: str
+    old_period: str
+    new_period: str
+
+
 def _serialize_evaluation(
     evaluation: ModelEvaluation,
     node_plots: dict[str, ActualVsPredictedPlot | ObservedVsSampledPlot],
@@ -248,6 +290,7 @@ def create_app(
     *,
     treatments: Sequence[str] | None = None,
     outcomes: Sequence[str] | None = None,
+    period_column: str | None = None,
     max_rows: int = 5000,
     test_size: float = 0.2,
     random_state: int = 0,
@@ -294,8 +337,26 @@ def create_app(
         # treatment and outcome layout columns at once.
         raise ValueError(f"columns cannot be both a treatment and an outcome: {sorted(both)}")
 
+    if period_column is not None:
+        if period_column not in data.columns:
+            raise ValueError(f"period column {period_column!r} not found in {data_path}")
+        if period_column in treatments or period_column in outcomes:
+            raise ValueError(
+                f"period column {period_column!r} cannot also be a treatment or outcome"
+            )
+
+    # Every column the DAG/association scan/causal model ever see. The
+    # period column (if any) is a row-splitter for the Period
+    # comparison tab, not a causal variable: it stays out of the graph
+    # entirely (so it never has to be numeric, unlike every other
+    # column -- see `_validate_dtypes`/`_validate_columns`) but stays in
+    # `data` itself, since `get_period_attribution` below splits the
+    # full dataframe on it directly. A no-op filter (`dag_columns ==
+    # list(data.columns)`) when `period_column` is `None`.
+    dag_columns = [c for c in data.columns if c != period_column]
+
     scan = scan_associations(
-        data,
+        data[dag_columns],
         treatments=treatments,
         outcomes=outcomes,
         max_rows=max_rows,
@@ -306,7 +367,7 @@ def create_app(
         strong_auc=strong_auc,
     )
     dag = _build_initial_dag(
-        list(data.columns), treatments=treatments, outcomes=outcomes, random_state=random_state
+        dag_columns, treatments=treatments, outcomes=outcomes, random_state=random_state
     )
     if initial_session is not None:
         dag = DAGModel.load_session(initial_session)
@@ -344,12 +405,26 @@ def create_app(
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
+        # `period_values`: sorted, stringified, deduplicated -- read
+        # once here rather than cached, since it is cheap and this
+        # keeps it honest against `data` even if that ever stops being
+        # startup-immutable. `None` (not `[]`) when no period column is
+        # configured, so the frontend can tell "no column" apart from
+        # "a column with zero distinct values" (which can't actually
+        # happen, but `None` is the more honest sentinel either way).
+        period_values = (
+            sorted({str(v) for v in data[period_column].dropna().unique()})
+            if period_column is not None
+            else None
+        )
         return {
             "status": "ok",
             "data_path": str(data_path),
             "n_rows": int(data.shape[0]),
             "n_columns": int(data.shape[1]),
             "scoped": scan.scoped,
+            "period_column": period_column,
+            "period_values": period_values,
         }
 
     # -- graph -----------------------------------------------------------
@@ -528,6 +603,47 @@ def create_app(
             causal_model_state, data, body.node, body.from_value, body.to_value, body.target
         )
         return asdict(result)
+
+    @app.post("/api/causal/period-attribution")
+    def get_period_attribution(body: PeriodAttributionRequest) -> dict[str, Any]:
+        # Two guards, checked in this order: a missing period column is
+        # a launch-time configuration problem (relaunching with
+        # --period-column fixes it), a missing build is the same
+        # per-request "build first" state every other causal endpoint
+        # above already guards on -- most useful message first.
+        if period_column is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "no period column configured for this session -- "
+                    "relaunch with --period-column COLUMN"
+                ),
+            )
+        if causal_model_state is None:
+            raise HTTPException(
+                status_code=400,
+                detail="causal model not built yet -- POST /api/causal/build first",
+            )
+        period_labels = data[period_column].astype(str)
+        old_rows = data.loc[period_labels == body.old_period].drop(columns=[period_column])
+        new_rows = data.loc[period_labels == body.new_period].drop(columns=[period_column])
+        if old_rows.empty:
+            raise HTTPException(
+                status_code=400, detail=f"no rows with {period_column}={body.old_period!r}"
+            )
+        if new_rows.empty:
+            raise HTTPException(
+                status_code=400, detail=f"no rows with {period_column}={body.new_period!r}"
+            )
+        results = attribute_period_change(
+            causal_model_state, old_rows, new_rows, body.target_node, random_state=random_state
+        )
+        return {
+            "target_node": body.target_node,
+            "old_period": body.old_period,
+            "new_period": body.new_period,
+            "contributions": [asdict(r) for r in results],
+        }
 
     @app.get("/api/causal/plot/{node}")
     def get_causal_node_plot(node: str) -> dict[str, Any]:

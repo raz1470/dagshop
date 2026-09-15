@@ -80,6 +80,41 @@ def scoped_client(scoped_csv):
 
 
 @pytest.fixture
+def period_csv(tmp_path):
+    """Same a/b/c shape as `unscoped_csv`, stacked across two labeled
+    periods so `create_app(period_column="period")` has something to
+    split on. `b`'s mean is deliberately higher in "new" than
+    "baseline" so a period-attribution call has a real, nonzero target
+    change to decompose, not a coin flip near zero."""
+    rng = np.random.default_rng(RANDOM_STATE)
+    n = 40
+    baseline = pd.DataFrame(
+        {
+            "a": rng.normal(size=n),
+            "b": rng.normal(size=n),
+            "c": rng.normal(size=n),
+            "period": "baseline",
+        }
+    )
+    new_period = pd.DataFrame(
+        {
+            "a": rng.normal(size=n),
+            "b": rng.normal(2.0, size=n),
+            "c": rng.normal(size=n),
+            "period": "new",
+        }
+    )
+    frame = pd.concat([baseline, new_period], ignore_index=True)
+    return _write_csv(tmp_path, frame)
+
+
+@pytest.fixture
+def period_client(period_csv):
+    app = create_app(period_csv, period_column="period", random_state=RANDOM_STATE)
+    return TestClient(app)
+
+
+@pytest.fixture
 def sequential_gcm_jobs():
     """Forces `dowhy.gcm` to run sequentially for the causal-attribution
     tests below. This sandboxed bridge shell hits `BrokenProcessPool`/
@@ -128,6 +163,23 @@ def test_scoped_app_pins_treatment_and_outcome_positions(scoped_client):
 def test_overlapping_treatment_and_outcome_rejected(scoped_csv):
     with pytest.raises(ValueError, match="both a treatment and an outcome"):
         create_app(scoped_csv, treatments=["outcome"], outcomes=["outcome"])
+
+
+def test_period_column_not_found_is_rejected(unscoped_csv):
+    with pytest.raises(ValueError, match="period column"):
+        create_app(unscoped_csv, period_column="nope")
+
+
+def test_period_column_also_treatment_is_rejected(scoped_csv):
+    with pytest.raises(ValueError, match="period column"):
+        create_app(
+            scoped_csv, treatments=["treated"], outcomes=["outcome"], period_column="treated"
+        )
+
+
+def test_period_column_excluded_from_dag_nodes(period_client):
+    graph = period_client.get("/api/graph").json()
+    assert {n["name"] for n in graph["nodes"]} == {"a", "b", "c"}
 
 
 def test_initial_session_resume_overrides_fresh_layout(unscoped_csv, tmp_path):
@@ -201,6 +253,18 @@ def test_health(client):
     assert body["n_columns"] == 3
     assert body["n_rows"] == 60
     assert body["scoped"] is False
+
+
+def test_health_period_column_defaults_to_none(client):
+    body = client.get("/api/health").json()
+    assert body["period_column"] is None
+    assert body["period_values"] is None
+
+
+def test_health_reports_period_column_and_values(period_client):
+    body = period_client.get("/api/health").json()
+    assert body["period_column"] == "period"
+    assert body["period_values"] == ["baseline", "new"]
 
 
 def test_tables_unscoped_uses_full_table(client):
@@ -686,6 +750,80 @@ def test_causal_plot_unknown_node_after_build_is_404(client, sequential_gcm_jobs
     assert resp.status_code == 200
     plot_resp = client.get("/api/causal/plot/nope")
     assert plot_resp.status_code == 404
+
+
+# -- period comparison -----------------------------------------------------------
+
+
+def test_period_attribution_before_build_is_400(period_client):
+    resp = period_client.post(
+        "/api/causal/period-attribution",
+        json={"target_node": "c", "old_period": "baseline", "new_period": "new"},
+    )
+    assert resp.status_code == 400
+    assert "build" in resp.json()["detail"]
+
+
+def test_period_attribution_no_period_column_configured_is_400(client, sequential_gcm_jobs):
+    # `client` (unscoped_csv) has no `period_column` at all -- this
+    # guard fires before the "model not built" one below, even though
+    # no build has happened here either (see server.py's
+    # `get_period_attribution` comment on the guard ordering).
+    _build_chain(client)
+    resp = client.post(
+        "/api/causal/period-attribution",
+        json={"target_node": "c", "old_period": "x", "new_period": "y"},
+    )
+    assert resp.status_code == 400
+    assert "period column" in resp.json()["detail"]
+
+
+def test_period_attribution_after_build(period_client, sequential_gcm_jobs):
+    build_resp = _build_chain(period_client)
+    assert build_resp.status_code == 200
+
+    resp = period_client.post(
+        "/api/causal/period-attribution",
+        json={"target_node": "c", "old_period": "baseline", "new_period": "new"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["target_node"] == "c"
+    assert body["old_period"] == "baseline"
+    assert body["new_period"] == "new"
+    nodes = {row["node"] for row in body["contributions"]}
+    assert nodes == {"a", "b", "c"}
+    for row in body["contributions"]:
+        assert set(row) == {"node", "contribution", "share", "mechanism_changed"}
+
+
+def test_period_attribution_unknown_target_is_404(period_client, sequential_gcm_jobs):
+    _build_chain(period_client)
+    resp = period_client.post(
+        "/api/causal/period-attribution",
+        json={"target_node": "nope", "old_period": "baseline", "new_period": "new"},
+    )
+    assert resp.status_code == 404
+
+
+def test_period_attribution_unknown_period_value_is_400(period_client, sequential_gcm_jobs):
+    _build_chain(period_client)
+    resp = period_client.post(
+        "/api/causal/period-attribution",
+        json={"target_node": "c", "old_period": "baseline", "new_period": "nope"},
+    )
+    assert resp.status_code == 400
+    assert "nope" in resp.json()["detail"]
+
+
+def test_period_attribution_unknown_old_period_value_is_400(period_client, sequential_gcm_jobs):
+    _build_chain(period_client)
+    resp = period_client.post(
+        "/api/causal/period-attribution",
+        json={"target_node": "c", "old_period": "nope", "new_period": "new"},
+    )
+    assert resp.status_code == 400
+    assert "nope" in resp.json()["detail"]
 
 
 # -- static assets ------------------------------------------------------------------

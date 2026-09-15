@@ -30,6 +30,8 @@
             aria-selected="false">Causal model</button>
           <button type="button" class="tab-btn" data-tab="causal-impact" role="tab"
             aria-selected="false">Causal impact</button>
+          <button type="button" class="tab-btn" data-tab="period" role="tab"
+            aria-selected="false">Period comparison</button>
         </div>
 
         <div id="tab-workshop" class="tab-panel" role="tabpanel">
@@ -103,6 +105,36 @@
             </div>
             <div id="causal-intervene-result"></div>
           </section>
+        </div>
+
+        <div id="tab-period" class="tab-panel hidden" role="tabpanel">
+          <h2>Period comparison</h2>
+          <p id="period-hint">
+            Attributes the change in a target node's <em>mean</em> between two periods to
+            individual upstream nodes (<code>dowhy.gcm.distribution_change</code>) &mdash; a
+            different question from Causal impact's variance-share ranking above, so a different
+            top driver between the two tabs on the same DAG is expected, not a contradiction.
+            Needs a causal model built on the Causal model tab first.
+          </p>
+          <p id="period-no-column-hint" class="causal-empty-hint hidden">
+            No period column configured for this session. Relaunch with
+            <code>dagshop launch data.csv --period-column COLUMN</code> to use this tab (try the
+            <code>csat-period</code> demo scenario).
+          </p>
+
+          <div id="period-controls" class="hidden">
+            <label for="period-target-select">Target node</label>
+            <select id="period-target-select"></select>
+
+            <label for="period-old-select">Baseline period</label>
+            <select id="period-old-select"></select>
+
+            <label for="period-new-select">New period</label>
+            <select id="period-new-select"></select>
+
+            <button id="btn-period-attribute" type="button">Show change drivers</button>
+          </div>
+          <div id="period-contribution-container"></div>
         </div>
       </aside>
 
