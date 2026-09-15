@@ -8,12 +8,14 @@ subcommands:
   docstring) with argument parsing and a uvicorn run loop; no
   application logic lives here.
 - `dagshop generate-demo-data OUTPUT.csv` -- wraps `demo_data.py`'s
-  `make_demo_data`/`make_csat_demo_data` (SCOPE.md's "Manual testing"
-  section), for someone without a real dataset yet to generate one with
-  a known causal structure and try `launch` against it.
-  `--scenario` picks which generator: `confounder`
-  (default, the original) or `csat` (the causal attribution feature's
-  multi-hop demo, SCOPE.md build order step 3).
+  `make_demo_data`/`make_csat_demo_data`/`make_csat_period_comparison_data`
+  (SCOPE.md's "Manual testing" section), for someone without a real
+  dataset yet to generate one with a known causal structure and try
+  `launch` against it. `--scenario` picks which generator: `confounder`
+  (default, the original), `csat` (the causal attribution feature's
+  multi-hop demo, SCOPE.md build order step 3), or `csat-period` (the
+  same DAG stacked across two periods, for the period vs period
+  attribution feature below).
 
 Decisions for the `launch` subcommand:
 
@@ -23,6 +25,11 @@ Decisions for the `launch` subcommand:
   `dagshop launch data.csv --treatment X --treatment Y --outcome Z`.
   Standard `argparse` `action="append"` pattern; no ambiguity if a
   column name itself contains a comma.
+- **`--period-column` names the Period comparison tab's row splitter**
+  (SCOPE.md's "Period vs period attribution feature" build order step
+  3). Kept out of `server.py`'s DAG/association scan entirely (it is a
+  label, not a causal variable, and does not need to be numeric) --
+  see `server.py`'s module docstring for how.
 - **Internal registry: not set up yet.** SCOPE.md says "internal
   PyPI/package registry" but names no concrete target (private PyPI
   server, AWS CodeArtifact, GitHub Packages, ...) and none exists today.
@@ -60,7 +67,11 @@ from pathlib import Path
 
 import uvicorn
 
-from dagshop.demo_data import make_csat_demo_data, make_demo_data
+from dagshop.demo_data import (
+    make_csat_demo_data,
+    make_csat_period_comparison_data,
+    make_demo_data,
+)
 from dagshop.server import create_app
 
 _BROWSER_OPEN_DELAY_SECONDS = 1.0
@@ -98,6 +109,18 @@ def _add_launch_subparser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         metavar="COLUMN",
         help="Designate COLUMN as an outcome variable. Repeat for more than one.",
+    )
+    launch.add_argument(
+        "--period-column",
+        dest="period_column",
+        default=None,
+        metavar="COLUMN",
+        help=(
+            "Designate COLUMN as the period splitter for the Period comparison tab "
+            "(e.g. baseline/new, or two reporting periods). Excluded from the DAG "
+            "itself -- it is not a causal variable, just a label used to split rows "
+            "for that tab's estimator. Try it with the csat-period demo scenario."
+        ),
     )
     launch.add_argument(
         "--max-rows",
@@ -192,14 +215,16 @@ def _add_generate_demo_data_subparser(subparsers: argparse._SubParsersAction) ->
     )
     demo.add_argument(
         "--scenario",
-        choices=["confounder", "csat"],
+        choices=["confounder", "csat", "csat-period"],
         default="confounder",
         help=(
             "Which synthetic scenario to generate (default: confounder). "
             "confounder: the original small confounder/treatment/mediator/outcome "
             "DAG. csat: the multi-hop customer-service operations DAG for the "
-            "causal attribution feature -- see dagshop.demo_data's module docstring "
-            "for both."
+            "causal attribution feature. csat-period: the same csat DAG stacked "
+            "across two periods with a `period` column, for the period vs period "
+            "attribution feature -- launch it with `--period-column period`. See "
+            "dagshop.demo_data's module docstring for all three."
         ),
     )
     demo.add_argument(
@@ -280,6 +305,7 @@ def _run_launch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> No
             args.data,
             treatments=args.treatments,
             outcomes=args.outcomes,
+            period_column=args.period_column,
             max_rows=args.max_rows,
             test_size=args.test_size,
             random_state=args.random_state,
@@ -321,6 +347,25 @@ def _run_generate_demo_data(args: argparse.Namespace, parser: argparse.ArgumentP
         print()
         print("Try:")
         print(f"  dagshop launch {shlex.quote(str(args.output))} --outcome csat")
+        return
+
+    if args.scenario == "csat-period":
+        data = make_csat_period_comparison_data(n_rows=args.n_rows, random_state=args.random_state)
+        data.to_csv(args.output, index=False)
+
+        print(f"Wrote {len(data)} rows to {args.output}")
+        print()
+        print("Same csat DAG as --scenario csat, stacked across two periods (see")
+        print("dagshop.demo_data's module docstring for the exact changes):")
+        print("  num_transfers:    a real mechanism change (its own coefficient strengthens)")
+        print("  time_to_respond:  a pure distribution shift (mechanism unchanged)")
+        print("  everything else:  unchanged between periods")
+        print()
+        print("Try:")
+        print(
+            f"  dagshop launch {shlex.quote(str(args.output))} --outcome csat "
+            "--period-column period"
+        )
         return
 
     data = make_demo_data(n_rows=args.n_rows, random_state=args.random_state)

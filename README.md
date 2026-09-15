@@ -44,6 +44,10 @@ Other flags worth knowing about:
 - `--session PATH` — resume a previously saved session file instead of
   starting from a fresh layout. The association scan still runs
   against `data.csv` either way.
+- `--period-column COLUMN` — designate COLUMN as the row splitter for
+  the Period comparison tab below (e.g. baseline/new, or two reporting
+  periods). Excluded from the DAG itself, so it never has to be
+  numeric — it's a label, not a causal variable.
 - `--max-rows`, `--test-size`, `--random-state`, `--plot-grid-size` —
   tune the association scan (subsample size, held-out fraction per
   pair, seed, points per prediction curve). Defaults are meant to be
@@ -91,6 +95,17 @@ structure (default: `confounder`):
   dagshop launch inputs/demo.csv --outcome csat
   ```
 
+- **`csat-period`** — the same `csat` DAG, stacked across two periods
+  with a `period` column: one node gets a genuine mechanism change
+  (its own coefficient strengthens between periods), another gets a
+  pure distribution shift (its mean moves, mechanism unchanged). Built
+  for the Period comparison tab below. Try it:
+
+  ```bash
+  dagshop generate-demo-data --scenario csat-period
+  dagshop launch inputs/demo.csv --outcome csat --period-column period
+  ```
+
 `--n-rows`/`--random-state` control size and reproducibility;
 `--force` overwrites an existing output path.
 
@@ -111,7 +126,7 @@ first or type a full path into the prompt.
 ## The workshop
 
 Once `launch` is running and your browser opens, the left panel is
-split into three tabs. The canvas on the right is outside all three —
+split into four tabs. The canvas on the right is outside all four —
 it stays visible and its nodes stay clickable no matter which tab is
 active.
 
@@ -171,6 +186,30 @@ hood, run twice), not a comparison against the real observed data —
 every other column stays at its real observed value for the same
 rows, for both draws. The result shows both means plus the absolute
 and percent change between them.
+
+### Period comparison tab
+
+Only shown once you've launched with `--period-column COLUMN` (see
+above). Attributes the *change* in a target node's mean between two
+periods to individual upstream nodes — a different question from
+Causal impact's variance-share ranking above, so it's normal for the
+two tabs to disagree on which node "matters most" for the same DAG.
+Pick a target, the baseline period value and the new period value
+(both read off your data's distinct values in COLUMN), and click "Show
+change drivers" for a table of contributions plus a per-node
+"mechanism changed?" flag — did that node's own conditional
+distribution actually change between periods, or did its observed
+values just move because something upstream of it did. Under the
+hood this is `dowhy.gcm.distribution_change`, reusing the exact same
+per-node mechanisms (direct parents, monotonic constraints,
+`HistGradientBoostingRegressor`) the Causal model/Causal impact tabs
+already fit, refit once against each period's rows. Row click reuses
+the same plot modal as every other ranking table in the workshop.
+
+Same-period edges only: every edge assumes the child at time *t* is
+caused by the parent at the same *t*. Lagged relationships aren't
+supported — if you need one, add a lagged column/node to your data
+yourself before launching.
 
 ---
 

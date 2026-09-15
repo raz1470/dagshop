@@ -50,6 +50,17 @@ for a 0/1-coded node, the target picker restricted to that node's
 descendants, and the rendered baseline/intervened-mean result. Same
 bridge limitation as the causal-panel tests above -- validated by
 static reading only here, real signal from CI.
+
+`test_period_comparison_hint_without_period_column` and
+`test_period_comparison_panel` (SCOPE.md's "Period vs period
+attribution feature" build order step 4) cover the fourth tab: the
+"no period column configured" hint when `--period-column` wasn't
+given, and (on a second `live_server_with_period` fixture, launched
+with one) the target/old/new pickers, the run button, and the rendered
+contribution table with its "Mechanism changed?" column -- row click
+reuses the same plot modal as every other ranking table. Same bridge
+limitation as the causal-panel tests above -- validated by static
+reading only here, real signal from CI.
 """
 
 from __future__ import annotations
@@ -76,14 +87,29 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _start_uvicorn(app):
+    """Start `app` with a real uvicorn server in a background thread and
+    return `(server, thread, port)`. Shared by `live_server` and
+    `live_server_with_period` below -- both need an actual HTTP URL for
+    Playwright to navigate to, unlike `TestClient` (used in
+    test_server.py), which never opens a real socket.
+    """
+    port = _free_port()
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert server.started, "uvicorn did not start within 10s"
+    return server, thread, port
+
+
 @pytest.fixture
 def live_server(tmp_path):
-    """A real uvicorn server, in a background thread, serving `create_app`.
-
-    Playwright drives an actual browser and needs an actual HTTP URL to
-    navigate to -- `TestClient` (used in test_server.py) doesn't open a
-    real socket, so it can't be reused here.
-    """
+    """A real uvicorn server, in a background thread, serving `create_app`."""
     rng = np.random.default_rng(0)
     n = 60
     treated = rng.integers(0, 2, size=n)
@@ -99,17 +125,51 @@ def live_server(tmp_path):
     frame.to_csv(csv_path, index=False)
 
     app = create_app(csv_path, treatments=["treated"], outcomes=["outcome"], random_state=0)
-    port = _free_port()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-    server = uvicorn.Server(config)
+    server, thread, port = _start_uvicorn(app)
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
 
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + 10
-    while not server.started and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert server.started, "uvicorn did not start within 10s"
 
+@pytest.fixture
+def live_server_with_period(tmp_path):
+    """Same shape as `live_server`, stacked across two `period` values
+    and launched with `period_column="period"`, for the Period
+    comparison tab tests below. `outcome`'s mean is deliberately higher
+    in "new" than "baseline" (mirroring `test_server.py`'s `period_csv`
+    fixture) so a period-attribution call has a real, nonzero target
+    change to decompose."""
+    rng = np.random.default_rng(0)
+    n = 60
+
+    def _period_frame(period, mean_shift=0.0):
+        treated = rng.integers(0, 2, size=n)
+        return pd.DataFrame(
+            {
+                "age": rng.normal(50, 10, size=n),
+                "treated": treated,
+                "outcome": rng.normal(size=n) + treated * 2.0 + mean_shift,
+                "other": rng.normal(size=n),
+                "period": period,
+            }
+        )
+
+    frame = pd.concat(
+        [_period_frame("baseline"), _period_frame("new", mean_shift=2.0)], ignore_index=True
+    )
+    csv_path = tmp_path / "data.csv"
+    frame.to_csv(csv_path, index=False)
+
+    app = create_app(
+        csv_path,
+        treatments=["treated"],
+        outcomes=["outcome"],
+        period_column="period",
+        random_state=0,
+    )
+    server, thread, port = _start_uvicorn(app)
     try:
         yield f"http://127.0.0.1:{port}"
     finally:
@@ -573,3 +633,92 @@ def test_left_panel_tabs(live_server, page):
     assert "hidden" in (page.get_attribute("#tab-causal-impact", "class") or "")
 
     assert console_errors == [], f"console errors switching tabs: {console_errors}"
+
+
+def test_period_comparison_hint_without_period_column(live_server, page):
+    """No `--period-column` configured (`live_server`'s default): the
+    tab shows the "no period column" hint and `#period-controls` never
+    leaves `.hidden`, even after a build.
+    """
+    console_errors: list[str] = []
+    page.on("console", lambda msg: msg.type == "error" and console_errors.append(msg.text))
+    page.on("pageerror", lambda exc: console_errors.append(str(exc)))
+
+    page.goto(live_server)
+    page.wait_for_selector("#cy canvas")
+
+    page.click('[data-tab="causal-model"]')
+    page.click("#btn-causal-build")
+    page.wait_for_selector("#causal-build-result:not(.hidden)")
+
+    page.click('[data-tab="period"]')
+    page.wait_for_selector("#period-no-column-hint:not(.hidden)")
+    assert "hidden" in (page.get_attribute("#period-controls", "class") or "")
+
+    assert console_errors == [], f"console errors on period tab: {console_errors}"
+
+
+def test_period_comparison_panel(live_server_with_period, page):
+    """`--period-column period` configured (`live_server_with_period`):
+    the target/old/new pickers populate once a model is built, and
+    running the comparison renders a contribution table with a
+    "Mechanism changed?" column -- row click reuses the same plot
+    modal as every other ranking table.
+
+    Wires up `treated -> outcome` ("+") first, same as
+    `test_causal_intervene_panel`, so the build has a real edge to
+    fit against.
+    """
+    console_errors: list[str] = []
+
+    page.goto(live_server_with_period)
+    page.wait_for_selector("#cy canvas")
+
+    _post_json(
+        f"{live_server_with_period}/api/edges",
+        {"source": "treated", "target": "outcome", "sign": "+"},
+    )
+    page.reload()
+    page.wait_for_selector("#cy canvas")
+
+    page.on("console", lambda msg: msg.type == "error" and console_errors.append(msg.text))
+    page.on("pageerror", lambda exc: console_errors.append(str(exc)))
+
+    page.click('[data-tab="causal-model"]')
+    page.click("#btn-causal-build")
+    page.wait_for_selector("#causal-build-result:not(.hidden)")
+
+    page.click('[data-tab="period"]')
+    page.wait_for_selector("#period-controls:not(.hidden)")
+    assert "hidden" in (page.get_attribute("#period-no-column-hint", "class") or "")
+
+    old_options = page.eval_on_selector_all(
+        "#period-old-select option", "opts => opts.map(o => o.value)"
+    )
+    new_options = page.eval_on_selector_all(
+        "#period-new-select option", "opts => opts.map(o => o.value)"
+    )
+    assert old_options == ["baseline", "new"]
+    assert new_options == ["baseline", "new"]
+    assert page.input_value("#period-old-select") == "baseline"
+    assert page.input_value("#period-new-select") == "new"
+
+    page.select_option("#period-target-select", "outcome")
+    page.click("#btn-period-attribute")
+
+    page.wait_for_selector("#period-contribution-container table.rank-table tbody tr")
+    rows = page.query_selector_all("#period-contribution-container table.rank-table tbody tr")
+    assert len(rows) >= 1
+    header_texts = page.eval_on_selector_all(
+        "#period-contribution-container table.rank-table thead th",
+        "ths => ths.map(t => t.textContent)",
+    )
+    assert "Mechanism changed?" in header_texts
+
+    # Row click reuses the pairwise-association plot modal, same as the
+    # Causal impact contribution table (see app.js's
+    # buildPeriodContributionTable).
+    rows[0].click()
+    page.wait_for_selector("#plot-modal:not(.hidden)")
+
+    assert console_errors == [], f"console errors in period comparison panel: {console_errors}"
