@@ -362,6 +362,25 @@ class AttributionResult:
 
 
 @dataclass(frozen=True)
+class PeriodAttributionResult:
+    """One ranking-table row: `node`'s contribution to `target_node`'s mean change between periods.
+
+    See `attribute_period_change`'s docstring for the estimator this
+    wraps and the `mechanism_changed` flag's meaning. `share` follows
+    `AttributionResult.share`'s own convention (this row's `contribution`
+    divided by the sum of every row's `contribution` in this same call,
+    0.0 rather than a division blow-up when that sum is ~0) -- same
+    Shapley-efficiency reasoning, just decomposing a mean *change*
+    between two datasets instead of variance within one.
+    """
+
+    node: str
+    contribution: float
+    share: float
+    mechanism_changed: bool
+
+
+@dataclass(frozen=True)
 class InterventionResult:
     """Result of `do(node := from_value)` vs `do(node := to_value)`, both synthetic.
 
@@ -670,6 +689,98 @@ def attribute_target(
             node=node,
             contribution=float(value),
             share=float(value / total) if total else 0.0,
+        )
+        for node, value in ranked
+    ]
+
+
+def attribute_period_change(
+    fitted: FittedCausalModel,
+    old_data: pd.DataFrame,
+    new_data: pd.DataFrame,
+    target_node: str,
+    *,
+    num_samples: int = 2000,
+    n_jobs: int | None = None,
+    random_state: int | None = None,
+) -> list[PeriodAttributionResult]:
+    """Attribute `target_node`'s mean change between `old_data` and `new_data` to its ancestors.
+
+    SCOPE.md's "Period vs period attribution feature": a thin wrapper
+    around `gcm.distribution_change` (Budhathoki et al. 2021), not a
+    hand-rolled estimator -- see that section's revision note for why.
+    `auto_assignment_quality=None` clones `fitted.scm`'s already-assigned
+    per-node mechanisms (direct parents only, monotonic sign constraints,
+    `HistGradientBoostingRegressor` -- see `fit_causal_model`) onto two
+    fresh copies of the graph, refitting one against `old_data` and one
+    against `new_data`; neither refit touches `fitted.scm` itself.
+    `difference_estimation_func` is a plain mean difference (`new.mean()
+    - old.mean()`), not `dowhy`'s own KL-divergence default, so
+    contributions decompose `target_node`'s *mean* change and sum to it
+    (Shapley efficiency) -- matching the "why did the average move"
+    framing this feature exists for, not "how did its whole distribution
+    move."
+
+    Each result also carries `mechanism_changed`: `dowhy`'s own
+    significance-tested answer (kernel-based (conditional) independence
+    test, `dowhy`'s default significance level and FDR control) to "did
+    this node's own conditional distribution actually change between
+    periods," as opposed to "did its observed values just move because
+    an ancestor's did." A node can have a nonzero `contribution` with
+    `mechanism_changed=False` -- all of its contribution came from
+    upstream inputs moving, not from anything about the node itself
+    changing -- that combination is expected, not a bug; it's the exact
+    distinction this flag exists to draw (see
+    `make_csat_period_comparison_data`'s docstring for a worked example
+    of both cases).
+
+    Known limitation, accepted for v1 (see SCOPE.md's revision note):
+    `gcm.distribution_change`'s Shapley step averages over orderings
+    that can violate the DAG's true causal order, which can bias
+    attribution versus a causal-order-respecting method like `gcm.
+    distribution_change_robust`. Chosen anyway so this feature reuses
+    the exact same mechanisms as the Causal model/Causal impact tabs
+    rather than fitting a differently-shaped model just for this one.
+
+    Raises `KeyError` for an unknown `target_node` or a column missing
+    from either dataframe, `ColumnTypeError` for an unsupported dtype in
+    either (same rules as `fit_causal_model` -- see module docstring).
+    Rows are joint-`dropna`'d per dataframe (not across both), matching
+    this module's usual joint-`dropna` convention. `n_jobs`/
+    `random_state` behave exactly as in `attribute_target` (see its
+    docstring) -- same underlying `dowhy` global-state overrides.
+    """
+    if target_node not in fitted.dag.nodes:
+        raise KeyError(f"no node {target_node!r}")
+    _validate_columns(fitted.dag, old_data)
+    _validate_columns(fitted.dag, new_data)
+
+    old_eval = old_data[fitted.dag.nodes].dropna()
+    new_eval = new_data[fitted.dag.nodes].dropna()
+
+    def _mean_difference(old_samples: np.ndarray, new_samples: np.ndarray) -> float:
+        return float(np.mean(new_samples) - np.mean(old_samples))
+
+    with _n_jobs_override(n_jobs), _random_state_override(random_state):
+        contributions, mechanism_changed, _old_model, _new_model = gcm.distribution_change(
+            fitted.scm,
+            old_eval,
+            new_eval,
+            target_node,
+            auto_assignment_quality=None,
+            num_samples=num_samples,
+            difference_estimation_func=_mean_difference,
+            return_additional_info=True,
+        )
+
+    ranked = sorted(contributions.items(), key=lambda item: item[1], reverse=True)
+    total = sum(value for _, value in ranked)
+    return [
+        PeriodAttributionResult(
+            node=node,
+            contribution=float(value),
+            share=float(value / total) if total else 0.0,
+            mechanism_changed=bool(mechanism_changed[node]),
         )
         for node, value in ranked
     ]

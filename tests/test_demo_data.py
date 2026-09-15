@@ -8,7 +8,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from dagshop.demo_data import make_csat_demo_data, make_demo_data
+from dagshop.demo_data import (
+    make_csat_demo_data,
+    make_csat_period_comparison_data,
+    make_demo_data,
+)
 
 
 def test_default_shape_and_columns():
@@ -170,3 +174,86 @@ def test_csat_age_and_friction_severity_are_the_weakest_correlates():
     corr = data.corr(numeric_only=True)["csat"].drop("csat").abs()
     weakest_two = corr.nsmallest(2).index.tolist()
     assert set(weakest_two) == {"age", "friction_severity"}
+
+
+# -- make_csat_period_comparison_data ----------------------------------------
+
+
+def test_period_comparison_shape_and_columns():
+    data = make_csat_period_comparison_data(n_rows=50)
+    assert len(data) == 100
+    assert list(data.columns) == [
+        "age",
+        "friction_severity",
+        "time_to_respond",
+        "num_transfers",
+        "num_escalations",
+        "num_agents_spoken_to",
+        "time_to_resolve",
+        "resolved",
+        "repeat_contact",
+        "csat",
+        "period",
+    ]
+
+
+def test_period_comparison_has_both_labels_in_equal_counts():
+    data = make_csat_period_comparison_data(n_rows=50)
+    assert data["period"].value_counts().to_dict() == {"baseline": 50, "new": 50}
+
+
+def test_period_comparison_same_random_state_is_reproducible():
+    first = make_csat_period_comparison_data(n_rows=30, random_state=5)
+    second = make_csat_period_comparison_data(n_rows=30, random_state=5)
+    pd.testing.assert_frame_equal(first, second)
+
+
+def test_period_comparison_different_random_state_differs():
+    first = make_csat_period_comparison_data(n_rows=30, random_state=5)
+    second = make_csat_period_comparison_data(n_rows=30, random_state=6)
+    baseline_first = first.loc[first["period"] == "baseline", "friction_severity"]
+    baseline_second = second.loc[second["period"] == "baseline", "friction_severity"]
+    assert not baseline_first.reset_index(drop=True).equals(baseline_second.reset_index(drop=True))
+
+
+def test_period_comparison_baseline_rows_match_make_csat_demo_data():
+    # The "baseline" half must be exactly make_csat_demo_data's own output
+    # (same seed, same defaults) -- the whole point is a known, unmodified
+    # reference period to compare the deliberately-changed one against.
+    combined = make_csat_period_comparison_data(n_rows=40, random_state=7)
+    baseline_rows = combined.loc[combined["period"] == "baseline"].drop(columns="period")
+    reference = make_csat_demo_data(n_rows=40, random_state=7)
+    pd.testing.assert_frame_equal(baseline_rows.reset_index(drop=True), reference)
+
+
+def test_period_comparison_num_transfers_mean_rises_with_the_mechanism_change():
+    # friction_severity -> num_transfers deliberately strengthens
+    # (num_transfers_friction_coef 0.18 -> 0.30) in the new period, holding
+    # friction_severity's own distribution fixed -- a real mechanism
+    # change, not just a moved input. Large n to keep this a stable check,
+    # not a seed-dependent coin flip.
+    data = make_csat_period_comparison_data(n_rows=5000, random_state=0)
+    baseline_mean = data.loc[data["period"] == "baseline", "num_transfers"].mean()
+    new_mean = data.loc[data["period"] == "new", "num_transfers"].mean()
+    assert new_mean > baseline_mean * 1.2
+
+
+def test_period_comparison_time_to_respond_mean_rises_with_the_distribution_shift():
+    # time_to_respond (a root) shifts from gamma(scale=5.0) to
+    # gamma(scale=7.0) -- mean 15 -> 21 -- with no change to its edge into
+    # csat. A pure distribution shift on a root, not a mechanism change.
+    data = make_csat_period_comparison_data(n_rows=5000, random_state=0)
+    baseline_mean = data.loc[data["period"] == "baseline", "time_to_respond"].mean()
+    new_mean = data.loc[data["period"] == "new", "time_to_respond"].mean()
+    assert new_mean > baseline_mean * 1.2
+
+
+def test_period_comparison_csat_mean_drops_between_periods():
+    # Both deliberate changes push csat down (more transfers, slower
+    # response both hurt csat per make_csat_demo_data's documented signs)
+    # -- a sanity check that the scenario actually produces a period-over-
+    # period change worth attributing, not a wash.
+    data = make_csat_period_comparison_data(n_rows=5000, random_state=0)
+    baseline_mean = data.loc[data["period"] == "baseline", "csat"].mean()
+    new_mean = data.loc[data["period"] == "new", "csat"].mean()
+    assert baseline_mean - new_mean > 0.2
